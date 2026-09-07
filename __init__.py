@@ -29,6 +29,13 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **neg_editor_display,
 }
 
+# Register /easystring/* dataset routes when running inside ComfyUI.
+try:
+    from .esn_storage import register_routes as _esn_register
+    _esn_register()
+except Exception:
+    pass
+
 WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

@@ -480,6 +480,43 @@ def test_neg_editor_on_string_false_coerced():
     assert parsed[1]['on'] is False
 
 
+import esn_storage as _esn_storage
+
+
+def test_neg_editor_data_file_mode():
+    import shutil as _shutil
+    import tempfile as _tempfile
+    node = EasyStringNegEditor()
+    tmp = _tempfile.mkdtemp(prefix="esn_test_")
+    old_dir = _esn_storage.DATA_DIR
+    _esn_storage.DATA_DIR = tmp
+    try:
+        rows = [
+            {"num": 1, "cat": "x", "on": True, "pos": "alpha", "neg": "", "img": ""},
+            {"num": 2, "cat": "x", "on": False, "pos": "beta", "neg": "", "img": ""},
+        ]
+        ok, msg = _esn_storage.save_dataset("ds.json", rows, "1: 1")
+        assert ok, msg
+        pos, neg = node.process(
+            rows="[]", presets="", select_all=True, data_file="ds.json",
+            apply_weight=False)
+        assert pos == "alpha, beta", pos
+        pos, neg = node.process(
+            rows="[]", presets="", select_all=True, select_checked=True,
+            data_file="ds.json", apply_weight=False)
+        assert pos == "alpha", pos
+        try:
+            node.process(rows="[]", presets="", select_all=True,
+                         data_file="missing.json", apply_weight=False)
+        except ValueError as exc:
+            assert "not found" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected ValueError for missing dataset")
+    finally:
+        _esn_storage.DATA_DIR = old_dir
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------------------------------------------------------------- runner
 
 if __name__ == "__main__":

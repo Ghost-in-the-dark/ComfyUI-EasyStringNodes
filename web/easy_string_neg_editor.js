@@ -43,11 +43,14 @@ import { app } from "../../scripts/app.js";
 const NODE_CLASS = "EasyStringNegEditor";
 const ROWS_NAME = "rows";
 const PRESETS_NAME = "presets";
+const DATA_NAME = "data_file";
 const UI_NAME = "rows_list";
+const MAX_DRAWN_ROWS = 9;
+const WHEEL_STEP = 3;
+const RENDER_CHUNK = 60;
 
 const ROW_H = 20; // px per drawn row
 const HEADER_H = 24;
-const MAX_DRAWN_ROWS = 9;
 const IMG_MAX_EDGE = 384;
 const IMG_QUALITY = 0.82;
 const NL = String.fromCharCode(10); // newline without backslash escapes
@@ -137,6 +140,10 @@ function state(node) {
       widgetY: 0,
       widgetH: 0,
       scroll: 0, // rows scrolled past the top on the node canvas
+      file: "", // dataset file name (data_file widget) or ""
+      loadedFile: null, // name of the file already loaded into rows/presets
+      fileLoading: false,
+      loadFailed: false,
     };
   }
   return node.__esn;
@@ -156,6 +163,9 @@ function rowsWidget(node) {
 
 function presetsWidget(node) {
   return findWidget(node, PRESETS_NAME);
+}
+function dataWidget(node) {
+  return findWidget(node, DATA_NAME);
 }
 
 function widgetRawValue(w) {
@@ -199,14 +209,36 @@ function hideTextWidget(w) {
 }
 
 function hideRowsWidget(node) {
-  // hide both python text widgets (rows JSON + presets text)
+  // hide the python text widgets (rows JSON + presets text + data file name)
   hideTextWidget(rowsWidget(node));
   hideTextWidget(presetsWidget(node));
+  hideTextWidget(dataWidget(node));
 }
 
 function syncFromWidget(node) {
   const st = state(node);
   let changed = false;
+  // dataset file name first: when set, rows/presets live on disk and must
+  // NOT be overwritten from the (empty) widget values on every draw.
+  const dw = dataWidget(node);
+  let fileMode = false;
+  if (dw) {
+    const raw = widgetRawValue(dw);
+    if (raw !== st.file) {
+      st.file = raw;
+      st.loadFailed = false;
+      fileMode = !!raw;
+      changed = true;
+    } else {
+      fileMode = !!st.file;
+    }
+  } else {
+    fileMode = !!st.file;
+  }
+  if (fileMode) {
+    // only the file name drives the state; rows/presets come from the file
+    return changed;
+  }
   const rw = rowsWidget(node);
   if (rw) {
     const raw = widgetRawValue(rw);
@@ -227,11 +259,28 @@ function syncFromWidget(node) {
   return changed;
 }
 
+let fileSaveTimer = null;
+function persistFileNow(node) {
+  const st = state(node);
+  if (!st.file) return;
+  dsSave(st.file, st.rows, st.presets).then((res) => {
+    if (!res) console.warn("EasyStringNegEditor: could not save dataset " + st.file);
+  });
+}
+function scheduleFilePersist(node) {
+  if (fileSaveTimer) clearTimeout(fileSaveTimer);
+  fileSaveTimer = setTimeout(() => { fileSaveTimer = null; persistFileNow(node); }, 600);
+}
 function commitRows(node, rows) {
   const st = state(node);
   const w = rowsWidget(node);
   st.rows = cleanRows(rows);
   st.raw = dumpRows(st.rows);
+  if (st.file) {
+    // dataset mode: keep the workflow lean - data lives on disk only
+    scheduleFilePersist(node);
+    return st.rows.length;
+  }
   if (w) {
     try {
       w.value = st.raw;
@@ -255,6 +304,10 @@ function commitPresets(node, text) {
   const w = presetsWidget(node);
   text = String(text == null ? "" : text);
   st.presets = text;
+  if (st.file) {
+    scheduleFilePersist(node);
+    return;
+  }
   if (w) {
     try {
       w.value = text;
@@ -268,6 +321,22 @@ function commitPresets(node, text) {
       try {
         w.callback(text);
       } catch (e) {}
+    }
+  }
+}
+
+function commitDataFile(node, text) {
+  const st = state(node);
+  const w = dataWidget(node);
+  text = String(text == null ? "" : text);
+  st.file = text;
+  if (w) {
+    try { w.value = text; } catch (e) {}
+    if (w.inputEl && typeof w.inputEl === "object") {
+      try { if (w.inputEl.value !== text) w.inputEl.value = text; } catch (e) {}
+    }
+    if (typeof w.callback === "function") {
+      try { w.callback(text); } catch (e) {}
     }
   }
 }
@@ -318,7 +387,10 @@ function parseOldLine(raw) {
 }
 
 // Turn an old numbered dataset into row objects.
-// dest: "neg" (default) or "pos" - which prompt field receives the text.
+// A line may follow the old SelectorNeg format "positive --- negative":
+//   the part before the first top-level "---" becomes row.pos and the part
+//   after it becomes row.neg (either may be empty).
+// Lines without "---" go entirely into the chosen dest field ("neg" default).
 function parseOldRows(text, dest) {
   const out = [];
   const lines = String(text == null ? "" : text).split(NL);
@@ -326,7 +398,11 @@ function parseOldRows(text, dest) {
     const parsed = parseOldLine(raw);
     if (!parsed) continue;
     const row = { num: parsed.num, cat: "", on: true, pos: "", neg: "", img: "" };
-    if (dest === "pos") {
+    const marker = indexOfTopLevelDash(parsed.content);
+    if (marker >= 0) {
+      row.pos = parsed.content.slice(0, marker).trim();
+      row.neg = parsed.content.slice(marker + 3).trim();
+    } else if (dest === "pos") {
       row.pos = parsed.content;
     } else {
       row.neg = parsed.content;
@@ -334,6 +410,50 @@ function parseOldRows(text, dest) {
     out.push(row);
   }
   return out;
+}
+
+// Index of the first "---" that is not inside (), [] or {}, or -1.
+function indexOfTopLevelDash(text) {
+  if (!text) return -1;
+  let depth = 0;
+  for (let i = 0; i < text.length - 2; i++) {
+    const ch = text.charAt(i);
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && ch === "-" && text.charAt(i + 1) === "-" && text.charAt(i + 2) === "-") {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// ---------------------------------------------------------------------------
+// dataset files on disk (server routes from esn_storage.py)
+// ---------------------------------------------------------------------------
+
+function dsList() {
+  return fetch('/easystring/datasets', { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : { files: [] }))
+    .then((j) => (j && Array.isArray(j.files) ? j.files : []))
+    .catch(() => []);
+}
+
+function dsLoad(name) {
+  if (!name) return Promise.resolve(null);
+  return fetch('/easystring/data?file=' + encodeURIComponent(name), { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null);
+}
+
+function dsSave(name, rows, presets) {
+  return fetch('/easystring/data', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file: name, rows: rows, presets: presets }),
+  })
+    .then((r) => r.json())
+    .then((j) => (j && j.ok ? j : null))
+    .catch(() => null);
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +560,10 @@ function makeListWidget(node) {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       const pCount = countPresets(st.presets);
-      ctx.fillText("✎ Rows (" + rowCount(n) + ") / Presets (" + pCount + ") — edit", cx, y + HEADER_H / 2 + 1);
+      const loading = st.file && st.loadedFile !== st.file && !st.loadFailed;
+      const failed = st.file && st.loadedFile !== st.file && st.loadFailed;
+      ctx.fillStyle = failed ? "#e88" : "#cfc";
+      ctx.fillText(failed ? "✎ dataset " + st.file + " not found — edit" : (loading ? "✎ dataset " + st.file + " — loading…" : "✎ Rows (" + rowCount(n) + ") / Presets (" + pCount + ") — edit"), cx, y + HEADER_H / 2 + 1);
       ctx.restore();
 
       // rows
@@ -502,17 +625,30 @@ function makeListWidget(node) {
         st.rects.push({ top: ry, bottom: ry + ROW_H, index: st.scroll + i });
         ry += ROW_H;
       }
-      // scroll hint / bottom marker
-      if (total > shown + st.scroll) {
+      // scroll area: arrows + wheel, drawn whenever rows are hidden
+      st.scrollUp = null;
+      st.scrollDown = null;
+      const canScroll = total > MAX_DRAWN_ROWS;
+      if (canScroll) {
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "bold 11px sans-serif";
+        ctx.fillStyle = st.scroll > 0 ? "#9cf" : "rgba(255,255,255,0.2)";
+        const upY = ry + 4;
+        ctx.fillText("\u25b2", cx - 14, upY);
+        ctx.fillText("\u25bc", cx + 14, upY);
+        st.scrollUp = { x: cx - 24, y: ry, w: 28, h: 12 };
+        st.scrollDown = { x: cx + 4, y: ry, w: 28, h: 12 };
         ctx.fillStyle = "rgba(255,255,255,0.4)";
         ctx.font = "10px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText("\u2193 " + (total - (shown + st.scroll)) + " more - wheel scrolls", cx, ry + 9);
-      } else if (total > MAX_DRAWN_ROWS) {
+        const leftCount = total - (st.scroll + shown);
+        ctx.fillText(leftCount > 0 ? ("\u2193 " + leftCount + " more - wheel / arrows") : "(wheel to scroll)", cx, ry + 15);
+      } else if (shown === 0) {
         ctx.fillStyle = "rgba(255,255,255,0.25)";
         ctx.font = "10px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText("(wheel to scroll)", cx, ry + 9);
+        ctx.fillText("(no rows yet - click the header to add)", cx, ry + 12);
       }
       ctx.restore();
     },
@@ -529,6 +665,21 @@ function makeListWidget(node) {
         openEditor(node, null);
         return true;
       }
+      // scroll arrows (visible when more rows than fit)
+      const maxScr = Math.max(0, st.rows.length - MAX_DRAWN_ROWS);
+      if (maxScr > 0) {
+        const hitZone = (z) => z && x >= z.x - 2 && x <= z.x + z.w + 2 && y >= z.y - 2 && y <= z.y + z.h + 2;
+        if (hitZone(st.scrollUp)) {
+          st.scroll = Math.max(0, st.scroll - WHEEL_STEP);
+          app.graph?.setDirtyCanvas?.(true, true);
+          return true;
+        }
+        if (hitZone(st.scrollDown)) {
+          st.scroll = Math.min(maxScr, st.scroll + WHEEL_STEP);
+          app.graph?.setDirtyCanvas?.(true, true);
+          return true;
+        }
+      }
       for (const r of st.rects) {
         if (y >= r.top - 1 && y <= r.bottom + 1) {
           // checkbox column toggles the manual-pick flag in place
@@ -536,17 +687,7 @@ function makeListWidget(node) {
             const row = st.rows[r.index];
             if (row) {
               row.on = !row.on;
-              const rw = rowsWidget(node);
-              if (rw) {
-                const st2 = state(node);
-                const raw = dumpRows(st2.rows);
-                st2.raw = raw;
-                try { rw.value = raw; } catch (e) {}
-                if (rw.inputEl && typeof rw.inputEl === "object") {
-                  try { rw.inputEl.value = raw; } catch (e) {}
-                }
-                if (typeof rw.callback === "function") { try { rw.callback(raw); } catch (e) {} }
-              }
+              commitRows(node, st.rows); // dataset-aware (file vs widget)
               app.graph?.setDirtyCanvas?.(true, true);
             }
             return true;
@@ -729,23 +870,9 @@ function installHover() {
     canvas.addEventListener("pointerleave", hideHover);
     // wheel over a drawn row area scrolls the node row list (kept out of
     // the dialog; dialog has its own scrollable list)
-    function onWheel(e) {
-      hideHover();
+    function wheelScrollNode(e, gx, gy) {
       const graph = app.graph;
-      if (!graph || !graph._nodes) return;
-      const canvasEl = app.canvas && app.canvas.canvas;
-      if (!canvasEl) return;
-      // graph coords under the cursor
-      let gx = null, gy = null;
-      try {
-        if (typeof app.canvas.adjustMouseEvent === "function") app.canvas.adjustMouseEvent(e);
-        const rect = canvasEl.getBoundingClientRect();
-        const scale = app.canvas.ds ? app.canvas.ds.scale : 1;
-        const ox = app.canvas.ds ? app.canvas.ds.offset[0] : 0;
-        const oy = app.canvas.ds ? app.canvas.ds.offset[1] : 0;
-        gx = (e.clientX - rect.left) / scale + ox;
-        gy = (e.clientY - rect.top) / scale + oy;
-      } catch (err) { return; }
+      if (!graph || !graph._nodes) return false;
       // walk nodes topmost-first like hitRowAt
       for (let i = graph._nodes.length - 1; i >= 0; i--) {
         const node = graph._nodes[i];
@@ -759,18 +886,63 @@ function installHover() {
         const ly = gy - y0;
         // only when over the row list area (below header)
         if (ly < st0.widgetY + HEADER_H || ly > st0.widgetY + st0.widgetH) continue;
-        const delta = e.deltaY > 0 ? 1 : e.deltaY < 0 ? -1 : 0;
-        if (!delta) continue;
-        e.preventDefault();
-        e.stopPropagation();
         const total = st0.rows.length;
         const maxScroll = Math.max(0, total - MAX_DRAWN_ROWS);
+        if (maxScroll <= 0) return false;
+        const delta = e.deltaY > 0 ? WHEEL_STEP : e.deltaY < 0 ? -WHEEL_STEP : 0;
+        if (!delta) return false;
         st0.scroll = Math.max(0, Math.min(maxScroll, st0.scroll + delta));
         app.graph?.setDirtyCanvas?.(true, true);
-        return;
+        return true;
+      }
+      return false;
+    }
+    // document-level capture: works even when the inner UI swallows wheel
+    function onDocWheel(e) {
+      if (dialog) return; // dialog has its own scrollers
+      hideHover();
+      const canvasEl = app.canvas && app.canvas.canvas;
+      if (!canvasEl) return;
+      const over = e.target && e.target !== canvasEl &&
+        !(e.target instanceof HTMLCanvasElement) &&
+        !(e.target.closest && e.target.closest("canvas"));
+      if (over) return; // not over the graph canvas itself
+      let gx = null, gy = null;
+      try {
+        if (typeof app.canvas.adjustMouseEvent === "function") app.canvas.adjustMouseEvent(e);
+        const rect = canvasEl.getBoundingClientRect();
+        const scale = app.canvas.ds ? app.canvas.ds.scale : 1;
+        const ox = app.canvas.ds ? app.canvas.ds.offset[0] : 0;
+        const oy = app.canvas.ds ? app.canvas.ds.offset[1] : 0;
+        gx = (e.clientX - rect.left) / scale + ox;
+        gy = (e.clientY - rect.top) / scale + oy;
+      } catch (err) { return; }
+      if (wheelScrollNode(e, gx, gy)) {
+        e.preventDefault();
+        e.stopPropagation();
       }
     }
-    canvas.addEventListener("wheel", onWheel, { passive: false });
+    function onCanvasWheel(e) {
+      hideHover();
+      const canvasEl = app.canvas && app.canvas.canvas;
+      if (!canvasEl) return;
+      let gx = null, gy = null;
+      try {
+        if (typeof app.canvas.adjustMouseEvent === "function") app.canvas.adjustMouseEvent(e);
+        const rect = canvasEl.getBoundingClientRect();
+        const scale = app.canvas.ds ? app.canvas.ds.scale : 1;
+        const ox = app.canvas.ds ? app.canvas.ds.offset[0] : 0;
+        const oy = app.canvas.ds ? app.canvas.ds.offset[1] : 0;
+        gx = (e.clientX - rect.left) / scale + ox;
+        gy = (e.clientY - rect.top) / scale + oy;
+      } catch (err) { return; }
+      if (wheelScrollNode(e, gx, gy)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
+    document.addEventListener("wheel", onDocWheel, { passive: false });
+    canvas.addEventListener("wheel", onCanvasWheel, { passive: false });
     canvas.addEventListener("pointerdown", hideHover);
   }
   attach();
@@ -781,8 +953,14 @@ function installHover() {
 // ---------------------------------------------------------------------------
 
 let dialog = null;
+let dlgTimerRef = null;
 
 function closeDialog() {
+  if (dlgTimerRef && dlgTimerRef._poll) {
+    clearInterval(dlgTimerRef._poll);
+    dlgTimerRef._poll = null;
+  }
+  dlgTimerRef = null;
   if (dialog) {
     const d = dialog;
     dialog = null;
@@ -1060,6 +1238,7 @@ function showDialog(node, editIndex) {
   closeDialog();
   syncFromWidget(node);
   const rows = cleanRows(state(node).rows); // working copy
+  let pendingFile = state(node).file || "";
 
   const frame = makeModalFrame("✎ Easy String Neg Editor");
   const overlay = frame.overlay;
@@ -1082,24 +1261,30 @@ function showDialog(node, editIndex) {
     });
     return b;
   };
-  const tabRows = tabBtn("Rows");
-  const tabPresets = tabBtn("Presets");
+  const tabRowsB = tabBtn("Rows");
+  const tabPresetsB = tabBtn("Presets");
+  const tabDataB = tabBtn("Data file");
   const setActive = (btn, on) => {
     btn.dataset.active = on ? "1" : "0";
     btn.style.color = on ? "#4af" : "#aaa";
     btn.style.borderBottomColor = on ? "#4af" : "transparent";
   };
-  setActive(tabRows, true);
-  setActive(tabPresets, false);
-  tabBar.appendChild(tabRows);
-  tabBar.appendChild(tabPresets);
-  panelAppendTab: {
-    frame.panel.insertBefore(tabBar, frame.header ? frame.header.nextSibling : frame.panel.firstChild);
-  }
+  setActive(tabRowsB, true);
+  setActive(tabPresetsB, false);
+  setActive(tabDataB, false);
+  tabBar.appendChild(tabRowsB);
+  tabBar.appendChild(tabPresetsB);
+  tabBar.appendChild(tabDataB);
+  frame.panel.insertBefore(tabBar, frame.header ? frame.header.nextSibling : frame.panel.firstChild);
+
+  // ---------------- shared working state ----------------
+  let currentTab = "rows";
+  const fullRows = () => rows;
+  const pTaRef = { value: "" };
 
   // ---------------- Rows panel ----------------
   const rowsPanel = document.createElement("div");
-  Object.assign(rowsPanel.style, { display: "flex", flexDirection: "column", gap: "8px" });
+  Object.assign(rowsPanel.style, { display: "flex", flexDirection: "column", gap: "8px", minHeight: "0", flex: "1 1 auto" });
 
   const toolbar = document.createElement("div");
   Object.assign(toolbar.style, { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" });
@@ -1112,14 +1297,17 @@ function showDialog(node, editIndex) {
     border: "1px solid #3d3d3d", borderRadius: "6px", padding: "7px 10px", fontSize: "13px",
   });
   const addBtn = mkBtn("+ Add row", { bg: "#2f6f4f", color: "#fff" });
-  const importBtn = mkBtn("↧ Import old data", { bg: "#5a4a2f", color: "#ffe8b0", title: "Paste numbered rows (N: … ~) or choose a file" });
+  const importBtn = mkBtn("↗ Import old data", { bg: "#5a4a2f", color: "#ffe8b0", title: "Paste numbered rows (N: … ~) or choose a file" });
   // category filter: built from all row cats; '' = all
   const catSel = document.createElement("select");
   const allOpt = document.createElement("option");
   allOpt.value = "";
   allOpt.textContent = "All categories";
   catSel.appendChild(allOpt);
-  (function fillCats() {
+  const rebuildCats = () => {
+    const cur = catSel.value;
+    catSel.innerHTML = "";
+    catSel.appendChild(allOpt);
     const seen = [];
     rows.forEach((r) => { const c = (r.cat || "").trim(); if (c && seen.indexOf(c) === -1) seen.push(c); });
     seen.sort();
@@ -1127,7 +1315,9 @@ function showDialog(node, editIndex) {
       const o = document.createElement("option");
       o.value = c; o.textContent = c; catSel.appendChild(o);
     });
-  })();
+    if (cur && seen.indexOf(cur) !== -1) catSel.value = cur;
+  };
+  rebuildCats();
   Object.assign(catSel.style, { background: "#171717", color: "#eee", border: "1px solid #3d3d3d", borderRadius: "6px", padding: "7px 6px", fontSize: "13px", maxWidth: "170px" });
   catSel.title = "Filter rows by category";
 
@@ -1147,35 +1337,35 @@ function showDialog(node, editIndex) {
 
   const rowsApi = {
     moveUp(card) {
-      const prev = card.previousElementSibling;
-      if (!prev) return;
-      list.insertBefore(card, prev);
       const i = rows.indexOf(card.__esnRow);
       if (i > 0) {
         const tmp = rows[i - 1];
         rows[i - 1] = rows[i];
         rows[i] = tmp;
+        applyFilter();
       }
-      applyFilter();
     },
     moveDown(card) {
-      const next = card.nextElementSibling;
-      if (!next) return;
-      list.insertBefore(next, card);
       const i = rows.indexOf(card.__esnRow);
       if (i !== -1 && i < rows.length - 1) {
         const tmp = rows[i + 1];
         rows[i + 1] = rows[i];
         rows[i] = tmp;
+        applyFilter();
       }
-      applyFilter();
     },
     remove(card) {
       const i = rows.indexOf(card.__esnRow);
       if (i !== -1) rows.splice(i, 1);
+      rebuildCats();
       applyFilter();
     },
   };
+
+  // ---- windowed rendering: only build cards for what is visible ----
+  let viewRows = []; // filtered rows currently backing the DOM list
+  let renderedCount = 0;
+  const cardEls = new Map(); // row -> live card element
 
   function rowMatches(row, q, cat) {
     if (cat) {
@@ -1188,39 +1378,68 @@ function showDialog(node, editIndex) {
     return (String(row.num != null ? row.num : "") + " " + rc + " " + row.pos + " " + row.neg).toLowerCase().indexOf(q) !== -1;
   }
 
+  function renderChunk(extra) {
+    const want = Math.min(viewRows.length, renderedCount + RENDER_CHUNK + (extra || 0));
+    let frag = document.createDocumentFragment();
+    let idx = renderedCount;
+    for (; idx < want; idx++) {
+      const row = viewRows[idx];
+      const i = rows.indexOf(row);
+      let card = cardEls.get(row);
+      if (!card) {
+        card = buildRowCard(row, i, rowsApi);
+        cardEls.set(row, card);
+      }
+      const lbl = card.querySelector(".esn-idx");
+      if (lbl) lbl.textContent = "Row " + (i + 1);
+      frag.appendChild(card);
+    }
+    renderedCount = idx;
+    if (idx > 0) list.appendChild(frag);
+    // if the container still has free space, keep filling
+    if (renderedCount < viewRows.length && list.scrollHeight <= list.clientHeight + 4) {
+      renderChunk(0);
+    }
+  }
+
   function applyFilter() {
     const q = searchInp.value.trim();
     const cat = catSel.value;
-    const visible = [];
-    rows.forEach((row) => { if (rowMatches(row, q, cat)) visible.push(row); });
-    const cardEls = new Map();
-    Array.from(list.children).forEach((c) => cardEls.set(c.__esnRow, c));
+    viewRows = [];
+    rows.forEach((row) => { if (rowMatches(row, q, cat)) viewRows.push(row); });
     list.innerHTML = "";
-    visible.forEach((row) => {
-      const i = rows.indexOf(row);
-      let card = cardEls.get(row);
-      if (!card) card = buildRowCard(row, i, rowsApi);
-      const lbl = card.querySelector(".esn-idx");
-      if (lbl) lbl.textContent = "Row " + (i + 1);
-      list.appendChild(card);
-    });
-    const showAll = visible.length === rows.length;
-    hintEl.textContent = visible.length + " of " + rows.length + " row(s)" +
+    cardEls.clear();
+    renderedCount = 0;
+    renderChunk(0);
+    const showAll = viewRows.length === rows.length;
+    hintEl.textContent = viewRows.length + " of " + rows.length + " row(s)" +
       (!showAll ? " (filtered)" : "") + (cat ? " - category: " + cat : "") +
       " - tick a row to include it when select_checked is on";
   }
+
+  list.addEventListener("scroll", () => {
+    if (renderedCount < viewRows.length &&
+        list.scrollTop + list.clientHeight > list.scrollHeight - 420) {
+      renderChunk(0);
+    }
+  });
 
   searchInp.addEventListener("input", applyFilter);
   catSel.addEventListener("change", applyFilter);
 
   addBtn.addEventListener("click", () => {
     const row = { num: null, cat: "", on: true, pos: "", neg: "", img: "" };
-    const card = buildRowCard(row, rows.length - 1, rowsApi);
-    list.appendChild(card);
-    card.scrollIntoView({ block: "nearest" });
-    const ta = card.querySelector("textarea");
-    if (ta) ta.focus();
+    rows.push(row);
+    rebuildCats();
+    searchInp.value = "";
+    catSel.value = "";
     applyFilter();
+    list.scrollTop = list.scrollHeight;
+    const card = cardEls.get(row);
+    if (card) {
+      const ta = card.querySelector("textarea");
+      if (ta) ta.focus();
+    }
   });
 
   // ---------------- import modal (old data) ----------------
@@ -1241,7 +1460,7 @@ function showDialog(node, editIndex) {
     const hd = document.createElement("div");
     Object.assign(hd.style, { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: "1px solid #333" });
     const hT = document.createElement("div");
-    hT.textContent = "↧ Import old data";
+    hT.textContent = "↗ Import old data";
     hT.style.fontWeight = "bold";
     const hX = mkBtn("✕", { bg: "transparent", border: "none", pad: "2px 8px", font: "16px" });
     hX.addEventListener("click", () => im.remove());
@@ -1252,13 +1471,16 @@ function showDialog(node, editIndex) {
     const bd = document.createElement("div");
     Object.assign(bd.style, { overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "10px" });
     const info = document.createElement("div");
-    info.textContent = "Paste the old numbered dataset below (each line: number: text …, optionally ending with ~). Every line becomes a row, its text is stored in the chosen field and the original number is kept (shown as # on each card) — presets / line selection then use those numbers.";
+    info.textContent = "Paste old numbered rows (each line: number: text …, optional trailing ~). " +
+      "A line in the old SelectorNeg style \"positive --- negative\" is split: text before --- becomes the " +
+      "positive field, text after --- the negative field. Lines without --- go into the chosen field below. " +
+      "The original number is kept (shown as # on each card) and is used by presets / line selection.";
     Object.assign(info.style, { color: "#999", fontSize: "12px", lineHeight: "1.5" });
     bd.appendChild(info);
 
     const destRow = document.createElement("div");
     Object.assign(destRow.style, { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" });
-    destRow.appendChild(document.createTextNode("Import into:"));
+    destRow.appendChild(document.createTextNode("Lines without --- go into:"));
     const destSel = document.createElement("select");
     const optNeg = document.createElement("option");
     optNeg.value = "neg";
@@ -1280,7 +1502,7 @@ function showDialog(node, editIndex) {
     bd.appendChild(destRow);
 
     const ta = document.createElement("textarea");
-    ta.placeholder = "1: ;james m hardiman, ;lostgoose ~";
+    ta.placeholder = "1: ;james m hardiman, ;lostgoose ~\n2: ;alan moore --- ;comics ~";
     Object.assign(ta.style, {
       width: "100%", minHeight: "240px", boxSizing: "border-box", background: "#141414",
       color: "#eee", border: "1px solid #3d3d3d", borderRadius: "6px", padding: "8px",
@@ -1317,12 +1539,13 @@ function showDialog(node, editIndex) {
       const dest = destSel.value;
       const imported = parseOldRows(ta.value, dest);
       if (!imported.length) {
-        info.textContent = "No numbered lines found — make sure each line starts with a number and a colon.";
+        info.textContent = "No numbered lines found - make sure each line starts with a number and a colon.";
         info.style.color = "#e88";
         return;
       }
       if (modeCb.checked) rows.length = 0;
       for (const r of imported) rows.push(r);
+      rebuildCats();
       applyFilter();
       im.remove();
     });
@@ -1350,9 +1573,10 @@ function showDialog(node, editIndex) {
     color: "#eee", border: "1px solid #3d3d3d", borderRadius: "6px", padding: "8px",
     fontFamily: "monospace", fontSize: "12px", resize: "vertical",
   });
+  pTaRef.value = pTa;
   const pTool = document.createElement("div");
   Object.assign(pTool.style, { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" });
-  const pImp = mkBtn("↧ Import presets…", { bg: "#5a4a2f", color: "#ffe8b0", title: "Paste a preset block (merges)" });
+  const pImp = mkBtn("↗ Import presets…", { bg: "#5a4a2f", color: "#ffe8b0", title: "Paste a preset block (merges)" });
   const pCnt = document.createElement("span");
   Object.assign(pCnt.style, { color: "#888", fontSize: "11px" });
   const refreshCnt = () => { pCnt.textContent = countPresets(pTa.value) + " preset(s)"; };
@@ -1373,44 +1597,49 @@ function showDialog(node, editIndex) {
     refreshCnt();
   });
 
-  // ---- tab switching ----
-  const showRows = () => {
-    setActive(tabRows, true);
-    setActive(tabPresets, false);
-    rowsPanel.style.display = "flex";
-    presetsPanel.style.display = "none";
-  };
-  const showPresets = () => {
-    setActive(tabRows, false);
-    setActive(tabPresets, true);
-    rowsPanel.style.display = "none";
-    presetsPanel.style.display = "flex";
-  };
-  tabRows.addEventListener("click", showRows);
-  tabPresets.addEventListener("click", showPresets);
+  // ---------------- Data file panel ----------------
+  const dataPanel = document.createElement("div");
+  Object.assign(dataPanel.style, { display: "none", flexDirection: "column", gap: "10px" });
+  const dInfo = document.createElement("div");
+  dInfo.textContent = "Store this dataset (rows + presets) in a .json file inside the node\u2019s data folder. The workflow keeps only the file name, so one dataset can be reused across workflows. Editing happens in memory and is written when you press Save here or the main Save button.";
+  Object.assign(dInfo.style, { color: "#999", fontSize: "12px", lineHeight: "1.5" });
+  const dRow1 = document.createElement("div");
+  Object.assign(dRow1.style, { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" });
+  const dName = document.createElement("input");
+  dName.type = "text";
+  dName.value = pendingFile;
+  dName.placeholder = "dataset.json";
+  dName.title = "File name inside the node data folder (letters/digits/space/dot/dash/underscore, must end with .json)";
+  Object.assign(dName.style, {
+    flex: "1", minWidth: "200px", background: "#171717", color: "#eee",
+    border: "1px solid #3d3d3d", borderRadius: "6px", padding: "7px 10px", fontSize: "13px",
+  });
+  dName.addEventListener("input", () => { pendingFile = dName.value.trim(); });
+  const dSave = mkBtn("Save to file", { bg: "#2f6f4f", color: "#fff" });
+  const dLoad = mkBtn("Load from file", { bg: "#3a7bd5", color: "#fff" });
+  const dRefresh = mkBtn("↻", { title: "Refresh file list" });
+  dRow1.appendChild(dName);
+  dRow1.appendChild(dSave);
+  dRow1.appendChild(dLoad);
+  dRow1.appendChild(dRefresh);
+  dataPanel.appendChild(dInfo);
+  dataPanel.appendChild(dRow1);
+  const dStatus = document.createElement("div");
+  Object.assign(dStatus.style, { color: "#888", fontSize: "11px" });
+  dataPanel.appendChild(dStatus);
+  const dList = document.createElement("div");
+  Object.assign(dList.style, { display: "flex", flexDirection: "column", gap: "4px", maxHeight: "220px", overflowY: "auto", border: "1px solid #333", borderRadius: "6px", padding: "6px" });
+  dataPanel.appendChild(dList);
 
-  // panels share the scrolling body
-  body.appendChild(rowsPanel);
-  body.appendChild(presetsPanel);
+  function statusText(msg, err) {
+    dStatus.textContent = msg;
+    dStatus.style.color = err ? "#e88" : "#8b8";
+  }
 
-  // ---------------- footer (Save / Cancel) ----------------
-  const hint = document.createElement("span");
-  hint.textContent = "Images are embedded (downscaled) into the workflow JSON.";
-  Object.assign(hint.style, { color: "#888", fontSize: "11px", flex: "1" });
-  const cancelBtn = mkBtn("Cancel", {});
-  cancelBtn.addEventListener("click", closeDialog);
-  const saveBtn = mkBtn("Save", { bg: "#3a7bd5", color: "#fff", font: "13px" });
-  Object.assign(saveBtn.style, { fontWeight: "bold" });
-  saveBtn.addEventListener("click", () => {
+  function collectRowsFromCards() {
     const out = [];
     rows.forEach((row, i) => {
-      // find the live card for this row (may be filtered out — read DOM only when present)
-      let card = null;
-      const cardEls = list.children;
-      for (let k = 0; k < cardEls.length; k++) {
-
-        if (cardEls[k].__esnRow === row) { card = cardEls[k]; break; }
-      }
+      const card = cardEls.get(row);
       let pos = "", neg = "";
       if (card) {
         const tas = card.querySelectorAll("textarea");
@@ -1429,7 +1658,126 @@ function showDialog(node, editIndex) {
         img: typeof row.img === "string" ? row.img : "",
       });
     });
+    return out;
+  }
+
+  async function refreshFileList() {
+    const files = await dsList();
+    dList.innerHTML = "";
+    if (!files.length) {
+      const empty = document.createElement("div");
+      empty.textContent = "(no datasets saved yet)";
+      empty.style.color = "#666";
+      empty.style.fontSize = "12px";
+      empty.style.padding = "4px";
+      dList.appendChild(empty);
+      return;
+    }
+    files.forEach((name) => {
+      const rowBtn = mkBtn(name, { bg: "transparent", font: "12px", pad: "4px 8px" });
+      rowBtn.style.textAlign = "left";
+      rowBtn.addEventListener("click", () => {
+        dName.value = name;
+        pendingFile = name;
+        doLoad(name);
+      });
+      dList.appendChild(rowBtn);
+    });
+  }
+
+  async function doLoad(name) {
+    statusText("Loading " + name + "…", false);
+    const data = await dsLoad(name);
+    if (!data) {
+      statusText("Could not load " + name + " - missing or invalid JSON.", true);
+      return;
+    }
+    rows.length = 0;
+    const loaded = cleanRows(data.rows);
+    for (const r of loaded) rows.push(r);
+    pTa.value = (data.presets || "");
+    refreshCnt();
+    rebuildCats();
+    applyFilter();
+    pendingFile = name;
+    statusText("Loaded " + loaded.length + " row(s) from " + name + ". Changes are applied when you press Save.", false);
+  }
+
+  async function doSaveFile() {
+    const name = pendingFile.trim();
+    if (!name) {
+      statusText("Enter a file name first (e.g. artists.json).", true);
+      return;
+    }
+    const outRows = collectRowsFromCards();
+    const res = await dsSave(name, outRows, pTa.value || "");
+    if (!res) {
+      statusText("Save failed - check the file name and that the data folder is writable.", true);
+      return;
+    }
+    pendingFile = name;
+    // make the node re-read the freshly written file
+    const stf = state(node);
+    stf.loadedFile = null;
+    stf.loadFailed = false;
+    loadDatasetInto(node);
+    statusText("Saved " + outRows.length + " row(s) + presets to " + res.file + ".", false);
+    refreshFileList();
+  }
+
+  dSave.addEventListener("click", doSaveFile);
+  dLoad.addEventListener("click", () => doLoad(dName.value.trim()));
+  dRefresh.addEventListener("click", refreshFileList);
+  refreshFileList();
+
+  // ---------------- panel switching ----------------
+  const panels = { rows: rowsPanel, presets: presetsPanel, data: dataPanel };
+  const buttons = { rows: tabRowsB, presets: tabPresetsB, data: tabDataB };
+  const showTab = (name) => {
+    currentTab = name;
+    Object.keys(panels).forEach((k) => {
+      panels[k].style.display = k === name ? "flex" : "none";
+      setActive(buttons[k], k === name);
+    });
+  };
+  tabRowsB.addEventListener("click", () => showTab("rows"));
+  tabPresetsB.addEventListener("click", () => showTab("presets"));
+  tabDataB.addEventListener("click", () => showTab("data"));
+  body.appendChild(rowsPanel);
+  body.appendChild(presetsPanel);
+  body.appendChild(dataPanel);
+
+  // ---------------- footer (Save / Cancel) ----------------
+  const hint = document.createElement("span");
+  hint.style.cssText = "color:#888;font-size:11px;flex:1";
+  const updateHint = () => {
+    hint.textContent = pendingFile
+      ? "Dataset file: " + pendingFile + " (rows+presets written to it on Save)"
+      : "No dataset file - rows/presets are stored in the workflow";
+  };
+  updateHint();
+  const cancelBtn = mkBtn("Cancel", {});
+  cancelBtn.addEventListener("click", closeDialog);
+  const saveBtn = mkBtn("Save", { bg: "#3a7bd5", color: "#fff", font: "13px" });
+  Object.assign(saveBtn.style, { fontWeight: "bold" });
+  saveBtn.addEventListener("click", () => {
+    const out = collectRowsFromCards();
+    const fname = pendingFile.trim();
+    // dataset name first: commitRows/commitPresets then know whether they
+    // should write the widgets (embedded mode) or only the file (dataset mode)
+    commitDataFile(node, fname);
     commitRows(node, out);
+    commitPresets(node, pTa.value || "");
+    if (fname) {
+      dsSave(fname, out, pTa.value || "").then((res) => {
+        if (!res) console.warn("EasyStringNegEditor: dataset file save failed for " + fname);
+      });
+      // refresh the canvas list from the file we just wrote
+      const stf = state(node);
+      stf.loadedFile = null;
+      stf.loadFailed = false;
+      loadDatasetInto(node);
+    }
     resizeNode(node);
     closeDialog();
   });
@@ -1447,22 +1795,93 @@ function showDialog(node, editIndex) {
   document.addEventListener("keydown", onKey);
   dlg._onKey = onKey;
   dialog = dlg;
+  dlgTimerRef = dlg;
 
   applyFilter();
+  pTaRef.value = pTa;
+  updateHint();
 
-  // focus requested row (or first field)
-  const cards = Array.from(list.children);
-  const target = editIndex != null && cards[editIndex] ? cards[editIndex] : cards[0];
-  if (target) {
+  // focus requested row (or first field) once its card is rendered
+  const targetIndex = editIndex != null ? editIndex : 0;
+  const focusTarget = () => {
+    const target = viewRows.length ? cardEls.get(viewRows[Math.min(targetIndex, viewRows.length - 1)]) : null;
+    if (!target) return false;
     const ta = target.querySelector("textarea");
     if (ta) ta.focus();
     if (editIndex != null) target.scrollIntoView({ block: "center" });
+    return true;
+  };
+  if (!focusTarget() && viewRows.length > RENDER_CHUNK && editIndex != null) {
+    // requested row is far below the first chunk - scroll the list there first
+    list.scrollTop = list.scrollHeight;
+    renderChunk(Math.max(0, Math.min(viewRows.length, targetIndex + RENDER_CHUNK) - renderedCount));
+    setTimeout(() => { if (!focusTarget()) applyFilter(); }, 30);
+  } else if (editIndex == null) {
+    const first = cardEls.get(viewRows[0]);
+    if (first) {
+      const ta = first.querySelector("textarea");
+      if (ta) ta.focus();
+    }
+  }
+  updateHint();
+
+  // dataset mode: if the file has not reached the state yet, load it into
+  // the open dialog so the rows list shows real content
+  const dSt = state(node);
+  if (dSt.file && !rows.length && dSt.loadedFile !== dSt.file && !dSt.fileLoading) {
+    hint.textContent = "Loading dataset " + dSt.file + " …";
+    loadDatasetInto(node);
+    const pollTimer = setInterval(() => {
+      const s2 = state(node);
+      if (s2.loadedFile === s2.file) {
+        clearInterval(pollTimer);
+        if (dlgTimerRef) dlgTimerRef._poll = null;
+        rows.length = 0;
+        const loaded = cleanRows(s2.rows);
+        for (const r of loaded) rows.push(r);
+        if (pTa) pTa.value = s2.presets || "";
+        if (typeof refreshCnt === "function") refreshCnt();
+        rebuildCats();
+        applyFilter();
+        updateHint();
+      } else if (!s2.fileLoading) {
+        clearInterval(pollTimer);
+        if (dlgTimerRef) dlgTimerRef._poll = null;
+        hint.textContent = "Could not load dataset " + s2.file;
+        hint.style.color = "#e88";
+      }
+    }, 160);
+    if (dlgTimerRef) dlgTimerRef._poll = pollTimer;
   }
 }
 
 // ---------------------------------------------------------------------------
 // setup (idempotent, retries until python widgets exist)
 // ---------------------------------------------------------------------------
+
+function clearWidgetValuesForFileMode(node) {
+  const st = state(node);
+  if (!st.file) return;
+  // dataset mode: keep the serialized workflow small - the widgets only
+  // carry the file name; rows/presets live on disk.
+  const rw = rowsWidget(node);
+  if (rw && widgetRawValue(rw) !== "[]") {
+    try { rw.value = "[]"; } catch (e) {}
+    try { if (rw.inputEl && typeof rw.inputEl === "object") rw.inputEl.value = "[]"; } catch (e) {}
+  }
+  const pw = presetsWidget(node);
+  if (pw && widgetRawValue(pw) !== "") {
+    try { pw.value = ""; } catch (e) {}
+    try { if (pw.inputEl && typeof pw.inputEl === "object") pw.inputEl.value = ""; } catch (e) {}
+  }
+  // only blank the in-memory rows when they belong to a different file
+  if (st.loadedFile !== st.file) {
+    st.raw = "[]";
+    st.rows = [];
+    st.presets = "";
+    st.loadedFile = null;
+  }
+}
 
 function setupNode(node) {
   if (!node || node.__esnSetupDone) return;
@@ -1480,11 +1899,15 @@ function setupNode(node) {
     node.__esnSetupDone = true;
     hideRowsWidget(node);
     syncFromWidget(node);
+    clearWidgetValuesForFileMode(node);
+    loadDatasetInto(node);
     return;
   }
   node.__esnSetupDone = true;
   hideRowsWidget(node);
   syncFromWidget(node);
+  clearWidgetValuesForFileMode(node);
+  loadDatasetInto(node);
   const widget = makeListWidget(node);
   try {
     if (typeof node.addCustomWidget === "function") {
@@ -1504,7 +1927,40 @@ function setupNode(node) {
 function refreshNode(node) {
   if (!node || node.type !== NODE_CLASS) return;
   syncFromWidget(node);
+  loadDatasetInto(node);
   resizeNode(node);
+}
+
+// Dataset mode: load rows+presets from disk into the node state (async).
+// The canvas then shows the real rows; nothing is written into the widget
+// values so the workflow keeps only the file name.
+function loadDatasetInto(node) {
+  const st = state(node);
+  if (!st.file) {
+    st.loadedFile = null;
+    return;
+  }
+  if (st.fileLoading) return;
+  if (st.loadedFile === st.file) return;
+  if (st.loadFailed) return;
+  st.fileLoading = true;
+  st.loadFailed = false;
+  dsLoad(st.file).then((data) => {
+    st.fileLoading = false;
+    if (!data) {
+      console.warn("EasyStringNegEditor: cannot load dataset " + st.file);
+      st.loadFailed = true;
+      try { app.graph?.setDirtyCanvas?.(true, true); } catch (e) {}
+      resizeNode(node);
+      return;
+    }
+    st.rows = cleanRows(data.rows || []);
+    st.raw = dumpRows(st.rows);
+    st.presets = data.presets || "";
+    st.loadedFile = st.file;
+    try { app.graph?.setDirtyCanvas?.(true, true); } catch (e) {}
+    resizeNode(node);
+  });
 }
 
 // ---------------------------------------------------------------------------

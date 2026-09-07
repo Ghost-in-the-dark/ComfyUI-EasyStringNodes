@@ -16,3 +16,6 @@ env/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# User datasets (EasyStringNegEditor data folder - local to each install)
+data/

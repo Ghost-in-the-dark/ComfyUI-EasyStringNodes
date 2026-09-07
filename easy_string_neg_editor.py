@@ -24,6 +24,17 @@ Selection reuses the same syntax as the other nodes: "1", "1,3", "2-4".
 import json
 import re
 
+# dataset storage on disk (rows + presets saved as a .json file in <node>/data)
+try:
+    from .esn_storage import (  # package context (ComfyUI loads the folder as a package)
+        load_dataset as esn_load_dataset,
+        save_dataset as esn_save_dataset,
+    )
+except ImportError:  # plain script / test context
+    from esn_storage import (
+        load_dataset as esn_load_dataset,
+        save_dataset as esn_save_dataset,
+    )
 try:
     from .utils import (  # package context (ComfyUI loads the folder as a package)
         format_weight,
@@ -165,6 +176,16 @@ class EasyStringNegEditor:
                         "tooltip": "On: only rows ticked with the checkbox in "
                                    "the editor are used (manual pick mode); "
                                    "overrides line_numbers and presets.",
+                    },
+                ),
+                "data_file": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": "Dataset file name in the node data folder "
+                                   "(e.g. artists.json). When set, rows and "
+                                   "presets are loaded from that file at run time "
+                                   "instead of from the widget values.",
                     },
                 ),
             },
@@ -346,12 +367,24 @@ class EasyStringNegEditor:
     # ------------------------------------------------------------------
     def process(self, rows, presets="", line_numbers="1", select_all=True,
                 use_preset=False, preset_line=1, select_checked=False,
-                weight=1.0, apply_weight=True, add_break=False,
+                data_file="", weight=1.0, apply_weight=True, add_break=False,
                 preset_trigger=True):
         if not preset_trigger:
             raise ValueError("EasyStringNegEditor: preset_trigger is off. "
                              "Connect a true input (or set the widget) to "
                              "let this node run.")
+
+        if data_file:
+            # dataset mode: rows + presets come from a file on disk, not from
+            # the widget values (keeps the workflow small / reusable).
+            stored = esn_load_dataset(data_file)
+            if stored is None:
+                raise ValueError(
+                    "EasyStringNegEditor: dataset file not found or invalid: "
+                    + str(data_file) + " - check the Data tab of the editor."
+                )
+            rows = json.dumps(stored.get("rows") or [], ensure_ascii=False)
+            presets = stored.get("presets") or ""
 
         parsed = self._parse_rows(rows)
         # manual checkbox mode wins over everything else

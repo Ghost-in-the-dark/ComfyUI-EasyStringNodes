@@ -168,6 +168,7 @@ The **category** is a free-text label shown as a small chip on each row; the dia
 | `apply_weight` | BOOLEAN | `true` | rewrite each element as `(text:weight)` |
 | `add_break` | BOOLEAN | `false` | append ` BREAK` to the positive output |
 | `preset_trigger` | BOOLEAN (input) | `true` | enable gate; when `false` the node raises an error |
+| `data_file` | STRING | empty | dataset file name in the node **data folder** (e.g. `artists.json`); when set, rows + presets are loaded from that file at run time and the workflow stores only this name |
 | `select_checked` | BOOLEAN | `false` | `true` = use only rows ticked with the checkbox in the editor (manual pick; overrides `line_numbers` and presets) |
 
 **Outputs:** \`positive_prompt\` (STRING), \`negative_prompt\` (STRING)
@@ -176,7 +177,7 @@ Rows behave exactly like \`positive --- negative\` lines in *EasyStringSelectorN
 
 **Importing old data**
 
-The **↧ Import old data** button (Rows tab) pastes a numbered dataset — exactly the format of the old *Easy String Selector Neg* text, one line per row ending with \`~\` — and turns every line into a row: the number is stored as the row's **original #** and the rest of the line goes into the chosen field (**Negative** by default). Paste from the clipboard or choose a \`.txt\` file. Original numbers are kept so presets and \`line_numbers\` keep addressing the same rows even after reordering or editing.
+The **↧ Import old data** button (Rows tab) pastes a numbered dataset — exactly the format of the old *Easy String Selector Neg* text, one line per row ending with \`~\` — and turns every line into a row: the number is stored as the row's **original #** and the rest of the line goes into the chosen field (**Negative** by default). A line that follows the old SelectorNeg shape `positive --- negative` is split on the first top-level `---`: the part before it becomes the row's **positive** field, the part after it the **negative** field (either side may be empty) - so old datasets with a negative tail are restored correctly. Lines without `---` go entirely into the chosen field. Paste from the clipboard or choose a \`.txt\` file. Original numbers are kept so presets and \`line_numbers\` keep addressing the same rows even after reordering or editing.
 
 **Presets**
 
@@ -185,13 +186,14 @@ The **Presets** tab edits the \`presets\` field directly (\`presetNumber: row nu
 **Using the editor**
 
 - Click the **✎ Rows / Presets — edit** button on the node to open the dialog.
-- **Rows** tab: search box, **category filter**, **+ Add row** and **↧ Import old data**; click any card to edit its tick, category, fields, original number (#), image, order (↑/↓) or delete (🗑). The row list scrolls inside the dialog, so the toolbar stays visible.
-- Ticking a row on the node canvas itself (the checkbox at the row start) also toggles its state — the wheel over the list scrolls long row sets right on the node.
+- **Rows** tab: search box, **category filter**, **+ Add row** and **↧ Import old data**; click any card to edit its tick, category, fields, original number (#), image, order (↑/↓) or delete (🗑). With many rows the dialog renders only the visible part of the list and fills more as you scroll, so it opens instantly even for huge datasets.
+- Ticking a row on the node canvas itself (the checkbox at the row start) also toggles its state. Long row sets scroll right on the node with the mouse wheel or the drawn **▲ / ▼** arrows under the list.
 - **Presets** tab: type or import \`N: row numbers\` lines directly.
-- **Save** writes rows and presets back into the hidden \`rows\`/\`presets\` widgets; **Cancel** (or Esc) discards the changes.
+- **Data file** tab: save the whole dataset (rows + presets) to a `.json` file in the node **data folder** (`ComfyUI-EasyStringNodes/data`): type a name (e.g. `artists.json`) and press **Save to file**, or click an existing file to load it. Once a file name is set, the workflow stores only that name - the rows live on disk and can be shared across workflows. The main **Save** button also rewrites the file when a name is set.
+- **Save** writes rows and presets (including presets typed in the Presets tab) back into the hidden \`rows\`/\`presets\` widgets in embedded mode, or into the dataset file in dataset mode; **Cancel** (or Esc) discards the changes.
 - Hovering a drawn row shows a floating preview with that row's image (when it has one).
 
-> The hidden textareas that store \`rows\` and \`presets\` keep their standard widget names, so workflows, copy/paste and the API prompt work unchanged. The custom list widget never enters the API prompt.
+> The hidden textareas that store \`rows\` and \`presets\` keep their standard widget names, so workflows, copy/paste and the API prompt work unchanged. The custom list widget never enters the API prompt. In dataset mode (`data_file` set) the rows/presets widgets stay empty on purpose - the workflow only carries the file name and the node reads the file at run time; a missing or invalid file raises a clear error naming it.
 
 ## ConcatenatePromptsNode
 
