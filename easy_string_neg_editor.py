@@ -47,9 +47,9 @@ except ImportError:  # plain script / test context
 def default_rows():
     """Two demo rows so the node works right after it is added."""
     return [
-        {"cat": "animals", "on": true, "pos": "a cute cat",
+        {"cat": "animals", "on": True, "pos": "a cute cat",
          "neg": "dog, blurry", "img": ""},
-        {"cat": "animals", "on": false, "pos": "a bird in flight",
+        {"cat": "animals", "on": False, "pos": "a bird in flight",
          "neg": "watermark", "img": ""},
     ]
 
