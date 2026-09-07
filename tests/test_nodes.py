@@ -329,10 +329,36 @@ def test_neg_editor_invalid_row_type_raises():
         node.process('[{"pos": "cat", "neg": "dog"}, "oops"]')
 
 
-def test_neg_editor_empty_selection_spec_raises():
+def test_neg_editor_empty_line_numbers_uses_ticked():
+    # select_all off + empty line_numbers -> the checkbox-ticked rows are used
     node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'on': True, 'pos': 'a', 'neg': '', 'img': ''},
+        {'on': False, 'pos': 'b', 'neg': '', 'img': ''},
+    ])
+    pos, _ = node.process(rows, line_numbers="", select_all=False,
+                          apply_weight=False)
+    assert pos == 'a'
+
+
+def test_neg_editor_empty_line_numbers_all_default_ticked():
+    # rows WITHOUT an "on" field (legacy data) count as ticked, so an empty
+    # line_numbers field still selects them all
+    node = EasyStringNegEditor()
+    pos, _ = node.process(ROWS_JSON, line_numbers="", select_all=False,
+                          apply_weight=False)
+    assert pos == 'a cute cat, a bird in flight'
+
+
+def test_neg_editor_empty_line_numbers_none_ticked_raises():
+    # empty line_numbers with no ticked row is a clear error, not a crash
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'on': False, 'pos': 'a', 'neg': '', 'img': ''},
+        {'on': False, 'pos': 'b', 'neg': '', 'img': ''},
+    ])
     with raises(ValueError):
-        node.process(ROWS_JSON, line_numbers="", select_all=False)
+        node.process(rows, line_numbers="", select_all=False, apply_weight=False)
 
 
 # ---------------- presets & numbering (EasyStringNegEditor)

@@ -101,10 +101,11 @@ class EasyStringNegEditor:
                 "line_numbers": (
                     "STRING",
                     {
-                        "default": "1",
-                        "tooltip": "Rows to use when 'select_all' is off, "
-                                   "'use_preset' is off and 'select_checked' "
-                                   "is off, e.g. 1,3 or 2-4",
+                        "default": "",
+                        "tooltip": "Rows to use when 'select_all' is off and "
+                                   "'use_preset'/'select_checked' are off, "
+                                   "e.g. 1,3 or 2-4. Leave empty to use the "
+                                   "rows ticked with the checkbox.",
                     },
                 ),
                 "select_all": (
@@ -322,10 +323,17 @@ class EasyStringNegEditor:
             return rows
         numbers = parse_spec(line_numbers)
         if not numbers:
-            raise ValueError(
-                "EasyStringNegEditor: 'select_all' is off but 'line_numbers' "
-                "is empty."
-            )
+            # select_all off and no explicit row numbers: use the rows that are
+            # ticked with the checkbox (manual pick without needing the
+            # select_checked toggle)
+            checked = [r for r in rows if r["on"]]
+            if not checked:
+                raise ValueError(
+                    "EasyStringNegEditor: 'select_all' is off, 'line_numbers' "
+                    "is empty and no row is ticked - either enter row numbers "
+                    "in 'line_numbers' or tick rows in the editor (checkbox)."
+                )
+            return checked
         chosen = []
         for n in numbers:
             row = self._resolve_row_number(rows, n)
@@ -371,7 +379,7 @@ class EasyStringNegEditor:
     # ------------------------------------------------------------------
     # main
     # ------------------------------------------------------------------
-    def process(self, rows, presets="", line_numbers="1", select_all=True,
+    def process(self, rows, presets="", line_numbers="", select_all=True,
                 use_preset=False, preset_line=1, select_checked=False,
                 data_file="", weight=1.0, apply_weight=True, add_break=False,
                 preset_trigger=True):

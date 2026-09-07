@@ -47,6 +47,7 @@ const DATA_NAME = "data_file";
 const UI_NAME = "rows_list";
 const MAX_DRAWN_ROWS = 9;
 const WHEEL_STEP = 3;
+const PRESET_WHEEL_STEP = 2; // wheel notches per preset-list scroll
 const RENDER_CHUNK = 60;
 
 const ROW_H = 20; // px per drawn row
@@ -145,7 +146,9 @@ function state(node) {
       widgetY: 0,
       widgetH: 0,
       scroll: 0, // rows scrolled past the top on the node canvas
+      rowsAreaBottom: 0, // bottom (node-local y) of the drawn rows area
       presetScroll: 0, // presets scrolled past the top of the presets section
+      presetListArea: null, // {top,bottom} of drawn preset lines (when overflowing)
       presetRects: [], // {top,bottom,num,content} hit zones of preset lines
       presetsHeader: null, // {top,bottom} hit zone of the section header
       presetUp: null, // {top,bottom} hit zone of the presets ▲
@@ -657,6 +660,7 @@ function makeListWidget(node) {
       st.presetUse = null;
       st.presetPrev = null;
       st.presetNext = null;
+      st.presetListArea = null;
       const total = rowCount(n);
       const maxScroll = Math.max(0, total - MAX_DRAWN_ROWS);
       if (st.scroll > maxScroll) st.scroll = maxScroll;
@@ -742,6 +746,7 @@ function makeListWidget(node) {
         ctx.fillText("(no rows yet - click the header to add)", cx, ry + 12);
         rowsBottom = ry + 18;
       }
+      st.rowsAreaBottom = rowsBottom;
       ctx.restore();
 
       // ---- presets section (visible on the node like the old SelectorNeg) ----
@@ -797,6 +802,7 @@ function makeListWidget(node) {
           st.presetUp = { x: cx - 28, y: ay - 8, w: 28, h: 16 };
           st.presetDown = { x: cx + 2, y: ay - 8, w: 28, h: 16 };
           pBottom += 16;
+          st.presetListArea = { top: secTop + PRESET_HDR_H, bottom: pBottom };
         }
         // control row: use_preset toggle + active preset stepper
         ctx.fillStyle = "rgba(255,255,255,0.06)";
@@ -1108,82 +1114,97 @@ function installHover() {
     }
     canvas.addEventListener("pointermove", onCanvasPointerMove);
     canvas.addEventListener("pointerleave", hideHover);
-    // wheel over a drawn row area scrolls the node row list (kept out of
-    // the dialog; dialog has its own scrollable list)
-    function wheelScrollNode(e, gx, gy) {
+    // Wheel over the node's row / preset lists scrolls that list. The
+    // listener lives on document in the CAPTURE phase so it runs BEFORE
+    // LiteGraph's own canvas wheel handler (which zooms the workflow);
+    // when the wheel belongs to one of our lists we stop propagation so
+    // the workflow is not zoomed instead of the list scrolling.
+    function graphPointFromEvent(e) {
+      const canvasEl = app.canvas && app.canvas.canvas;
+      if (!canvasEl) return null;
+      try {
+        if (typeof app.canvas.adjustMouseEvent === "function") app.canvas.adjustMouseEvent(e);
+        const rect = canvasEl.getBoundingClientRect();
+        const scale = app.canvas.ds ? app.canvas.ds.scale : 1;
+        const ox = app.canvas.ds ? app.canvas.ds.offset[0] : 0;
+        const oy = app.canvas.ds ? app.canvas.ds.offset[1] : 0;
+        return {
+          gx: (e.clientX - rect.left) / scale + ox,
+          gy: (e.clientY - rect.top) / scale + oy,
+        };
+      } catch (err) {
+        return null;
+      }
+    }
+    // True when the wheel event sits over a scrollable list of one of our
+    // nodes; in that case the list is scrolled. Returns false when nothing
+    // was scrolled so the event may reach ComfyUI (zoom etc.).
+    function hitScrollableList(e) {
       const graph = app.graph;
       if (!graph || !graph._nodes) return false;
-      // walk nodes topmost-first like hitRowAt
+      const canvasEl = app.canvas && app.canvas.canvas;
+      if (!canvasEl) return false;
+      // only when the pointer is over the graph canvas itself; DOM UI (menus,
+      // panels) keeps its own wheel handling
+      const t = e.target;
+      if (t && t !== canvasEl && !(t instanceof HTMLCanvasElement) &&
+          !(t.closest && t.closest("canvas"))) return false;
+      const pt = graphPointFromEvent(e);
+      if (!pt) return false;
+      // topmost node first (later nodes are drawn on top)
       for (let i = graph._nodes.length - 1; i >= 0; i--) {
         const node = graph._nodes[i];
         if (!node || node.type !== NODE_CLASS || !node.__esnListWidget) continue;
         const st0 = state(node);
-        if (!st0.rects.length) continue;
         const x0 = node.pos ? node.pos[0] : 0;
         const y0 = node.pos ? node.pos[1] : 0;
         const size = node.size || [220, 100];
-        if (gx < x0 || gx > x0 + size[0] || gy < y0 || gy > y0 + size[1]) continue;
-        const ly = gy - y0;
-        // only when over the row list area (below header, above presets section)
-        const rowsEnd = st0.widgetY + HEADER_H + Math.min(Math.max(st0.rows.length, 1), MAX_DRAWN_ROWS) * ROW_H + 2;
-        if (ly < st0.widgetY + HEADER_H || ly > rowsEnd) continue;
-        const total = st0.rows.length;
-        const maxScroll = Math.max(0, total - MAX_DRAWN_ROWS);
-        if (maxScroll <= 0) return false;
-        const delta = e.deltaY > 0 ? WHEEL_STEP : e.deltaY < 0 ? -WHEEL_STEP : 0;
-        if (!delta) return false;
-        st0.scroll = Math.max(0, Math.min(maxScroll, st0.scroll + delta));
-        app.graph?.setDirtyCanvas?.(true, true);
-        return true;
+        if (pt.gx < x0 || pt.gx > x0 + size[0] || pt.gy < y0 || pt.gy > y0 + size[1]) continue;
+        const lx = pt.gx - x0; // node-local x
+        const ly = pt.gy - y0; // node-local y
+        const delta = e.deltaY > 0 ? 1 : e.deltaY < 0 ? -1 : 0;
+        // rows list scroll (only when the list overflows its area)
+        const totalRows = st0.rows.length;
+        const maxRowScroll = totalRows - MAX_DRAWN_ROWS;
+        if (maxRowScroll > 0 && st0.rowsAreaBottom) {
+          const rowsTop = st0.widgetY + HEADER_H;
+          const rowsBottom = st0.rowsAreaBottom;
+          if (ly > rowsTop && ly < rowsBottom && lx > 0 && lx < size[0]) {
+            if (delta !== 0) {
+              st0.scroll = Math.max(0, Math.min(maxRowScroll, st0.scroll + delta * WHEEL_STEP));
+              app.graph?.setDirtyCanvas?.(true, true);
+            }
+            return true; // over a scrollable list - swallow the wheel
+          }
+        }
+        // presets list scroll (only when it overflows its area)
+        const entries = presetEntries(st0.presets);
+        const maxPScroll = entries.length - MAX_DRAWN_PRESETS;
+        if (maxPScroll > 0 && st0.presetListArea) {
+          if (ly > st0.presetListArea.top && ly < st0.presetListArea.bottom &&
+              lx > 0 && lx < size[0]) {
+            if (delta !== 0) {
+              st0.presetScroll = Math.max(0, Math.min(maxPScroll, st0.presetScroll + delta * PRESET_WHEEL_STEP));
+              app.graph?.setDirtyCanvas?.(true, true);
+            }
+            return true; // over a scrollable list - swallow the wheel
+          }
+        }
+        // over this node but not over a scrollable list: keep looking for a
+        // (possibly lower) overlapping node with a scrollable list
+        continue;
       }
       return false;
     }
-    // document-level capture: works even when the inner UI swallows wheel
-    function onDocWheel(e) {
-      if (dialog) return; // dialog has its own scrollers
-      hideHover();
-      const canvasEl = app.canvas && app.canvas.canvas;
-      if (!canvasEl) return;
-      const over = e.target && e.target !== canvasEl &&
-        !(e.target instanceof HTMLCanvasElement) &&
-        !(e.target.closest && e.target.closest("canvas"));
-      if (over) return; // not over the graph canvas itself
-      let gx = null, gy = null;
-      try {
-        if (typeof app.canvas.adjustMouseEvent === "function") app.canvas.adjustMouseEvent(e);
-        const rect = canvasEl.getBoundingClientRect();
-        const scale = app.canvas.ds ? app.canvas.ds.scale : 1;
-        const ox = app.canvas.ds ? app.canvas.ds.offset[0] : 0;
-        const oy = app.canvas.ds ? app.canvas.ds.offset[1] : 0;
-        gx = (e.clientX - rect.left) / scale + ox;
-        gy = (e.clientY - rect.top) / scale + oy;
-      } catch (err) { return; }
-      if (wheelScrollNode(e, gx, gy)) {
+    function onDocWheelCapture(e) {
+      if (dialog) return; // the dialog has its own scrollers
+      if (hitScrollableList(e)) {
         e.preventDefault();
         e.stopPropagation();
+        hideHover();
       }
     }
-    function onCanvasWheel(e) {
-      hideHover();
-      const canvasEl = app.canvas && app.canvas.canvas;
-      if (!canvasEl) return;
-      let gx = null, gy = null;
-      try {
-        if (typeof app.canvas.adjustMouseEvent === "function") app.canvas.adjustMouseEvent(e);
-        const rect = canvasEl.getBoundingClientRect();
-        const scale = app.canvas.ds ? app.canvas.ds.scale : 1;
-        const ox = app.canvas.ds ? app.canvas.ds.offset[0] : 0;
-        const oy = app.canvas.ds ? app.canvas.ds.offset[1] : 0;
-        gx = (e.clientX - rect.left) / scale + ox;
-        gy = (e.clientY - rect.top) / scale + oy;
-      } catch (err) { return; }
-      if (wheelScrollNode(e, gx, gy)) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    }
-    document.addEventListener("wheel", onDocWheel, { passive: false });
-    canvas.addEventListener("wheel", onCanvasWheel, { passive: false });
+    document.addEventListener("wheel", onDocWheelCapture, { capture: true, passive: false });
     canvas.addEventListener("pointerdown", hideHover);
   }
   attach();
