@@ -1,0 +1,14 @@
+{
+  "1": {
+    "inputs": {
+      "input_text": "1: cat, dog\n2: bird, fish",
+      "line_numbers": "1",
+      "weight": 1.2,
+      "apply_weight": true
+    },
+    "class_type": "EasyStringV2",
+    "_meta": {
+      "title": "EasyStringV2 — re-weight one line"
+    }
+  }
+}

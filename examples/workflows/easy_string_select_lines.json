@@ -1,0 +1,12 @@
+{
+  "1": {
+    "inputs": {
+      "input_text": "1: a cat\n2: a dog\n3: a bird\n4: a fish",
+      "line_numbers": "1,3"
+    },
+    "class_type": "EasyString",
+    "_meta": {
+      "title": "EasyString — pick lines 1 and 3"
+    }
+  }
+}

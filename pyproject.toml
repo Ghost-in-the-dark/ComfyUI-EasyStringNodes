@@ -1,0 +1,14 @@
+[project]
+name = "ComfyUI-EasyStringNodes"
+description = "A set of text-processing nodes for ComfyUI: string/line selection, prompt weights, positive/negative splitting and prompt concatenation."
+version = "1.0.0"
+license = "MIT"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Ghost-in-the-dark/ComfyUI-EasyStringNodes"
+
+[tool.comfy]
+PublisherId = "Ghost-in-the-dark"
+DisplayName = "ComfyUI Easy String Nodes"
+Icon = ""
