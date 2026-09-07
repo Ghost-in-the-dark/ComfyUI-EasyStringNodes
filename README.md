@@ -157,7 +157,7 @@ The **category** is a free-text label shown as a small chip on each row; the dia
 
 | Input | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `rows` | STRING (JSON) | 2 demo rows | `[{num?, cat?, on?, pos, neg, img}, …]`; edit it through the **Add / Edit rows** button, not by hand |
+| `rows` | STRING (JSON) | 2 demo rows | `[{num?, cat?, on?, pos, neg, img, freq?}, …]`; edit it through the **Add / Edit rows** button, not by hand |
 | `presets` | STRING (text) | empty | one preset per line: `N: row numbers` (`1: 108 193 135`); edit/import it in the **Presets** tab |
 | `line_numbers` | STRING | `` (empty) | rows to use when `select_all`/`use_preset`/`select_checked` are off (`1,3` or `2-4`); leave empty to use the checkbox-ticked rows |
 | `select_all` | BOOLEAN | `true` | `true` = use every row, `false` = use `line_numbers` (or the checkbox-ticked rows when `line_numbers` is empty) |
@@ -186,7 +186,9 @@ The **Presets** tab edits the \`presets\` field directly (\`presetNumber: row nu
 
 - Click the **✎ Rows / Presets — edit** button on the node to open the dialog.
 - **Rows** tab: search box, **category filter**, **+ Add row**, **↧ Import old data** and the bulk **✓ all / ✗ none** buttons (tick or untick every row in one click); click any card to edit its tick, category, fields, original number (#), image, order (↑/↓) or delete (🗑). With many rows the dialog renders only the visible part of the list and fills more as you scroll, so it opens instantly even for huge datasets.
-- Ticking a row on the node canvas itself (the checkbox at the row start) also toggles its state. Long row sets scroll right on the node with the mouse wheel or the drawn **▲ / ▼** arrows under the list (when the preset list overflows, the wheel scrolls it too).
+- Ticking a row on the node canvas itself (the checkbox at the row start) also toggles its state. Long row sets scroll right on the node with the mouse wheel, the drawn **▲ / ▼** arrows under the list, or the **drag scrollbar** on the right edge of the rows area (when the preset list overflows, the wheel scrolls it too).
+- **On-node search**: the small search field under the header filters rows by number, category or text (`pos`/`neg`) live — the header then shows *Rows (matched/total)*, unmatched rows are hidden, and ✕ clears the filter. It searches the same way as the dialog search box.
+- **Usage ranking**: every row keeps a hidden `freq` counter that the node bumps once each time the row is actually selected by a run (`select_all`, `line_numbers`, preset or ticked checkbox). Used rows show a warm tint plus a **×N** counter on the right; the header **⇅** button sorts the list by frequency (most-used first; click again to restore the original order), and the dialog has a **⇅ by use** button too. Counters persist in the workflow/dataset, so the ranking survives reloads.
 - A **Presets** panel is drawn right on the node under the rows (like the old *Easy String Selector Neg*): it lists the preset lines, highlights the active one, and shows `preset off — all rows / line_numbers mode` when no preset is picked. Use the mini **use:on/off** toggle and the **◀ / ▶** buttons right there to turn the preset mode on and pick a preset, or click a preset line / the panel header to open the dialog on the **Presets** tab.
 - **Presets** tab: type or import \`N: row numbers\` lines directly.
 - **Data file** tab: save the whole dataset (rows + presets) to a `.json` file in the node **data folder** (`ComfyUI-EasyStringNodes/data`): type a name (e.g. `artists.json`) and press **Save to file**, or click an existing file to load it. Once a file name is set, the workflow stores only that name - the rows live on disk and can be shared across workflows. The main **Save** button also rewrites the file when a name is set.

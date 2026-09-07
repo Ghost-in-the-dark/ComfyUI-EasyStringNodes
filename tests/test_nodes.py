@@ -215,6 +215,24 @@ ROWS_JSON = (
 )
 
 
+# EasyStringNegEditor.process now returns
+#   {"ui": {"esn_freq": [...]}, "result": (positive_prompt, negative_prompt)}
+# to feed the usage-frequency counters back to the front-end.  Existing tests
+# call node.process(...) and expect a plain tuple, so shadow the method with a
+# transparent unpacker.  New frequency tests call _ESN_ORIG_PROCESS directly.
+_ESN_ORIG_PROCESS = EasyStringNegEditor.process
+
+
+def _esn_process_result(node, *args, **kwargs):
+    out = _ESN_ORIG_PROCESS(node, *args, **kwargs)
+    if isinstance(out, dict):
+        return out["result"]
+    return out
+
+
+EasyStringNegEditor.process = _esn_process_result
+
+
 def test_neg_editor_all_rows_plain():
     node = EasyStringNegEditor()
     pos, neg = node.process(ROWS_JSON, apply_weight=False)
@@ -584,6 +602,83 @@ def test_neg_editor_data_file_mode():
     finally:
         _esn_storage.DATA_DIR = old_dir
         _shutil.rmtree(tmp, ignore_errors=True)
+
+
+
+# ---------------- usage-frequency feedback (EasyStringNegEditor)
+
+
+def test_neg_editor_parse_rows_default_freq_zero():
+    node = EasyStringNegEditor()
+    parsed = node._parse_rows(ROWS_JSON)
+    assert parsed[0]["freq"] == 0
+    assert parsed[1]["freq"] == 0
+
+
+def test_neg_editor_freq_increments_all_when_select_all():
+    node = EasyStringNegEditor()
+    out = _ESN_ORIG_PROCESS(node, ROWS_JSON, apply_weight=False)
+    assert isinstance(out, dict), "expected dict ui/result return"
+    assert out["result"][0] == "a cute cat, a bird in flight"
+    assert out["ui"]["esn_freq"] == [1, 1]
+    # the front-end stores the counters back into the rows JSON; a second run
+    # on that updated payload keeps counting from where it stopped
+    rows2 = json.loads(ROWS_JSON)
+    for row, fr in zip(rows2, out["ui"]["esn_freq"]):
+        row["freq"] = fr
+    out2 = _ESN_ORIG_PROCESS(node, json.dumps(rows2), apply_weight=False)
+    assert out2["ui"]["esn_freq"] == [2, 2]
+
+
+def test_neg_editor_freq_only_selected_rows():
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'pos': 'a', 'neg': '', 'img': ''},
+        {'pos': 'b', 'neg': '', 'img': ''},
+        {'pos': 'c', 'neg': '', 'img': ''},
+    ])
+    out = _ESN_ORIG_PROCESS(node, rows, line_numbers="2", select_all=False,
+                            apply_weight=False)
+    assert out["ui"]["esn_freq"] == [0, 1, 0]
+    assert out["result"][0] == "b"
+
+
+def test_neg_editor_freq_preset_selection():
+    node = EasyStringNegEditor()
+    rows = '[{"pos": "a", "neg": "", "img": ""},{"pos": "b", "neg": "", "img": ""},{"pos": "c", "neg": "", "img": ""}]'
+    out = _ESN_ORIG_PROCESS(node, rows, presets="1: 1 3", use_preset=True,
+                            preset_line=1, apply_weight=False)
+    assert out["ui"]["esn_freq"] == [1, 0, 1]
+
+
+def test_neg_editor_freq_respects_existing_count():
+    # existing freq counters carry over and keep counting from there
+    node = EasyStringNegEditor()
+    rows = json.dumps([{'freq': 5, 'pos': 'a', 'neg': '', 'img': ''}])
+    out = _ESN_ORIG_PROCESS(node, rows, apply_weight=False)
+    assert out["ui"]["esn_freq"] == [6]
+
+
+def test_neg_editor_freq_invalid_values_coerce_to_zero():
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'freq': -3, 'pos': 'a', 'neg': '', 'img': ''},
+        {'freq': 'x', 'pos': 'b', 'neg': '', 'img': ''},
+        {'freq': 2.9, 'pos': 'c', 'neg': '', 'img': ''},
+    ])
+    parsed = node._parse_rows(rows)
+    # floats are rejected (no silent truncation), negatives clamp to 0
+    assert [r["freq"] for r in parsed] == [0, 0, 0]
+
+
+def test_neg_editor_freq_checkbox_mode():
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'on': True, 'pos': 'a', 'neg': '', 'img': ''},
+        {'on': False, 'pos': 'b', 'neg': '', 'img': ''},
+    ])
+    out = _ESN_ORIG_PROCESS(node, rows, select_checked=True, apply_weight=False)
+    assert out["ui"]["esn_freq"] == [1, 0]
 
 
 # ---------------------------------------------------------------- runner

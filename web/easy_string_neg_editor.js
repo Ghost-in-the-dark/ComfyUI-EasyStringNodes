@@ -4,6 +4,10 @@
 // node. Compatible with BOTH the legacy ComfyUI web UI and the new
 // ComfyUI_frontend based UI.
 //
+// v1.5.5: on-node search bar (filters by num/cat/pos/neg), a usage-frequency
+// ranking (×N counters fed back from Python through onExecuted, header ⇅ sort
+// and dialog ⇅ by use), and a draggable scrollbar for long row lists.
+//
 // Data model
 // ----------
 // The python "rows" STRING(multiline) widget stays the single source of
@@ -52,6 +56,9 @@ const RENDER_CHUNK = 60;
 
 const ROW_H = 20; // px per drawn row
 const HEADER_H = 24;
+const SEARCH_H = 20; // px of the always-visible search bar below the header
+const FREQ_W = 26; // px reserved on the right of a row for the usage counter
+const SB_W = 9; // scrollbar track width for the rows list
 // presets section drawn below the row list on the node canvas
 const MAX_DRAWN_PRESETS = 4; // preset lines visible on the node
 const PRESET_H = 16; // px per preset line
@@ -113,6 +120,13 @@ function cleanRows(rows) {
       const v = row.on.trim().toLowerCase();
       if (v === "" || v === "false" || v === "0" || v === "no" || v === "off") on = false;
     }
+    let freq = 0;
+    if (typeof row.freq === "number" && Number.isFinite(row.freq) && row.freq > 0) {
+      freq = Math.floor(row.freq);
+    } else if (typeof row.freq === "string") {
+      const n = Number(row.freq);
+      if (Number.isFinite(n) && n > 0) freq = Math.floor(n);
+    }
     out.push({
       num: num,
       cat: typeof row.cat === "string" ? row.cat : "",
@@ -120,6 +134,7 @@ function cleanRows(rows) {
       pos: typeof row.pos === "string" ? row.pos : "",
       neg: typeof row.neg === "string" ? row.neg : "",
       img: typeof row.img === "string" ? row.img : "",
+      freq: freq,
     });
   }
   return out;
@@ -141,6 +156,14 @@ function state(node) {
       rows: [],
       raw: null,
       presets: "",
+      search: "", // active filter text (typed in the on-node search bar)
+      searchFocus: false, // is the on-node search field focused?
+      view: [], // [{row, oi}] rows matching st.search (oi = index in st.rows)
+      draggingSb: false, // dragging the rows scrollbar thumb
+      sbStartY: 0, sbStartNodeY: 0, sbStartClientY: 0, sbScale: 1, sbGrabOffset: 0, sbZone: null,
+      sortBtn: null, // header sort control hit zone
+      sortedByFreq: false,
+      freqOrderBackup: null, // pre-sort order for the header toggle
       // per-row node-local rects set during draw
       rects: [],
       widgetY: 0,
@@ -591,12 +614,67 @@ function rowCount(node) {
   return state(node).rows.length;
 }
 
+function rowSearchText(row) {
+  // what the on-node search matches against: number, category, pos, neg
+  return String(row.num != null ? row.num : "") + " " +
+    (row.cat || "") + " " + (row.pos || "") + " " + (row.neg || "");
+}
+
+// Visible rows honoring the search filter: [{row, oi}] where oi is the index
+// in st.rows. Kept in st.view by draw(); standalone for sizing/hits.
+function rebuildView(st, rows) {
+  const q = (st.search || "").toLowerCase().trim();
+  const out = [];
+  rows = rows || st.rows || [];
+  for (let oi = 0; oi < rows.length; oi++) {
+    const row = rows[oi];
+    if (!q || rowSearchText(row).toLowerCase().indexOf(q) !== -1) out.push({ row: row, oi: oi });
+  }
+  return out;
+}
+
+function sortRowsByFreq(rows) {
+  // stable descending by usage counter; rows without a counter stay at the end
+  const withIdx = rows.map((row, i) => ({ row: row, i: i }));
+  withIdx.sort((a, b) => {
+    const fa = a.row.freq || 0, fb = b.row.freq || 0;
+    if (fb !== fa) return fb - fa;
+    return a.i - b.i;
+  });
+  return withIdx.map((x) => x.row);
+}
+
+function toggleFreqSort(node) {
+  const st = state(node);
+  const rows = st.rows;
+  if (!rows || rows.length < 2) return;
+  if (st.sortedByFreq) {
+    // restore the exact pre-sort order from the serialized backup
+    if (st.freqOrderBackup) {
+      try {
+        const restored = cleanRows(JSON.parse(st.freqOrderBackup));
+        if (restored.length === rows.length) commitRows(node, restored);
+      } catch (e) {}
+    }
+    st.sortedByFreq = false;
+    st.freqOrderBackup = null;
+  } else {
+    st.freqOrderBackup = JSON.stringify(rows); // snapshot original order
+    commitRows(node, sortRowsByFreq(rows.slice()));
+    st.sortedByFreq = true;
+  }
+  if (st.search) { st.scroll = 0; }
+  app.graph?.setDirtyCanvas?.(true, true);
+  resizeNode(node);
+}
+
 function listHeight(node) {
+  const st = state(node);
   const total = rowCount(node);
   const n = Math.min(total, MAX_DRAWN_ROWS);
-  let h = HEADER_H + n * ROW_H;
+  let h = HEADER_H + SEARCH_H + n * ROW_H;
   if (total > MAX_DRAWN_ROWS || n === 0) h += 18; // scroll hint / "no rows"
-  const entries = presetEntries(state(node).presets);
+  const entries = presetEntries(st.presets);
   const nP = Math.min(entries.length, MAX_DRAWN_PRESETS);
   h += PRESET_GAP + PRESET_HDR_H + nP * PRESET_H;
   if (entries.length > MAX_DRAWN_PRESETS) h += 16; // ▲/▼ row
@@ -607,6 +685,139 @@ function listHeight(node) {
 function openEditor(node, index, initialTab) {
   // implemented below; indirection keeps definition order simple
   showDialog(node, index, initialTab);
+}
+
+// --- on-node search (hidden DOM <input> focused on demand) ---
+let searchInput = null;
+let searchNode = null; // node currently being searched
+
+function ensureSearchInput() {
+  if (searchInput && searchInput.parentNode) return searchInput;
+  searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.setAttribute("autocomplete", "off");
+  searchInput.setAttribute("spellcheck", "false");
+  Object.assign(searchInput.style, {
+    position: "fixed", left: "0", top: "0", width: "1px", height: "1px",
+    opacity: "0", border: "0", padding: "0", margin: "0", outline: "none",
+    zIndex: "-1", pointerEvents: "none",
+  });
+  searchInput.addEventListener("input", () => {
+    const st = searchNode ? state(searchNode) : null;
+    if (st) {
+      st.search = searchInput.value || "";
+      app.graph?.setDirtyCanvas?.(true, true);
+    }
+  });
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      clearSearch();
+      e.stopPropagation();
+    } else if (e.key === "Enter") {
+      e.stopPropagation();
+    } else {
+      // keep graph hotkeys from firing while typing
+      e.stopPropagation();
+    }
+  });
+  searchInput.addEventListener("blur", () => {
+    const st = searchNode ? state(searchNode) : null;
+    if (st) st.searchFocus = false;
+    app.graph?.setDirtyCanvas?.(true, true);
+  });
+  searchInput.addEventListener("focus", () => {
+    const st = searchNode ? state(searchNode) : null;
+    if (st) st.searchFocus = true;
+    app.graph?.setDirtyCanvas?.(true, true);
+  });
+  document.body.appendChild(searchInput);
+  return searchInput;
+}
+
+function focusSearch(node) {
+  searchNode = node;
+  const inp = ensureSearchInput();
+  const st = state(node);
+  if (st.searchFocus) {
+    // already focused: keep focus and select-all so typing replaces the text
+    inp.focus();
+    inp.select();
+    return;
+  }
+  inp.value = st.search || "";
+  st.searchFocus = true;
+  inp.focus();
+  inp.select();
+}
+
+function clearSearch() {
+  const st = searchNode ? state(searchNode) : null;
+  if (searchInput) searchInput.value = "";
+  if (st) {
+    st.search = "";
+    st.searchFocus = false;
+    if (searchInput) searchInput.blur();
+    app.graph?.setDirtyCanvas?.(true, true);
+  }
+}
+
+// --- rows scrollbar drag ---
+let sbDragNode = null;
+
+function startSbDrag(node, st, event, y) {
+  const zone = st.sbZone;
+  if (!zone) return;
+  sbDragNode = node;
+  st.draggingSb = true;
+  st.sbStartClientY = (event && typeof event.clientY === "number") ? event.clientY : y;
+  st.sbStartNodeY = y;
+  const thumbY = zone.thumbY;
+  const grabOffset = y - thumbY;
+  // grabbing the track itself (not the thumb) grabs the thumb's middle
+  st.sbGrabOffset = (grabOffset >= 0 && grabOffset <= zone.thumbH) ? grabOffset : zone.thumbH / 2;
+  st.sbScale = (app.canvas && app.canvas.ds && app.canvas.ds.scale) ? app.canvas.ds.scale : 1;
+  try { event.preventDefault(); } catch (e) {}
+  try { event.stopPropagation(); } catch (e) {}
+  app.graph?.setDirtyCanvas?.(true, true);
+  // move + up on window so dragging outside the widget keeps working
+  window.addEventListener("pointermove", onSbMove, { passive: false });
+  window.addEventListener("pointerup", onSbUp);
+  window.addEventListener("pointercancel", onSbUp);
+}
+
+function onSbMove(e) {
+  const node = sbDragNode;
+  if (!node) return;
+  const st = state(node);
+  const zone = st.sbZone;
+  if (!zone) return;
+  try { e.preventDefault(); } catch (err) {}
+  try { e.stopPropagation(); } catch (err) {}
+  const usable = zone.h - zone.thumbH;
+  if (usable <= 0) return;
+  // convert the client delta to node-local units via the canvas scale
+  const nodeY = st.sbStartNodeY + ((e.clientY - st.sbStartClientY) / (st.sbScale || 1));
+  let frac = (nodeY - zone.y - st.sbGrabOffset) / usable;
+  if (frac < 0) frac = 0;
+  if (frac > 1) frac = 1;
+  const next = Math.round(frac * zone.maxScroll);
+  if (next !== st.scroll) {
+    st.scroll = next;
+    app.graph?.setDirtyCanvas?.(true, true);
+  }
+}
+
+function onSbUp() {
+  const node = sbDragNode;
+  sbDragNode = null;
+  if (node) {
+    const st = state(node);
+    st.draggingSb = false;
+    app.graph?.setDirtyCanvas?.(true, true);
+  }
+  window.removeEventListener("pointermove", onSbMove);
+  window.removeEventListener("pointerup", onSbUp);
+  window.removeEventListener("pointercancel", onSbUp);
 }
 
 function makeListWidget(node) {
@@ -647,8 +858,24 @@ function makeListWidget(node) {
       const pCount = countPresets(st.presets);
       const loading = st.file && st.loadedFile !== st.file && !st.loadFailed;
       const failed = st.file && st.loadedFile !== st.file && st.loadFailed;
-      ctx.fillStyle = failed ? "#e88" : "#cfc";
-      ctx.fillText(failed ? "✎ dataset " + st.file + " not found — edit" : (loading ? "✎ dataset " + st.file + " — loading…" : "✎ Rows (" + rowCount(n) + ") / Presets (" + pCount + ") — edit"), cx, y + HEADER_H / 2 + 1);
+      const totalShown = st.view ? st.view.length : rowCount(n);
+      const titleTxt = failed ? "✎ dataset " + st.file + " not found — edit" : (loading ? "✎ dataset " + st.file + " — loading…" : "✎ Rows (" + totalShown + (st.search ? "/" + rowCount(n) : "") + ") / Presets (" + pCount + ") — edit");
+      // sort-by-frequency toggle on the right edge of the header
+      const sortX = fullW - 34;
+      const sortY = y + 3;
+      const sortW = 22;
+      const sortH = HEADER_H - 6;
+      st.sortBtn = { x: sortX, y: sortY, w: sortW, h: sortH };
+      const canSort = (rowCount(n) || st.rows.length) > 1;
+      ctx.textAlign = "right";
+      ctx.font = "bold 11px sans-serif";
+      ctx.fillStyle = canSort ? (st.sortedByFreq ? "#ffcc66" : "rgba(255,255,255,0.6)") : "rgba(255,255,255,0.18)";
+      ctx.fillText("⇅", sortX + sortW - 8, y + HEADER_H / 2 + 1);
+      ctx.textAlign = "center";
+      // title, squeezed so it doesn't overlap the sort control
+      ctx.font = "bold 12px sans-serif";
+      const titleMax = fullW - 24 - 42;
+      ctx.fillText(clampText(titleTxt, Math.max(8, Math.floor(titleMax / 6.2))), 12 + (fullW - 24) / 2, y + HEADER_H / 2 + 1);
       ctx.restore();
 
       // rows
@@ -661,24 +888,67 @@ function makeListWidget(node) {
       st.presetPrev = null;
       st.presetNext = null;
       st.presetListArea = null;
-      const total = rowCount(n);
+      st.sbZone = null;
+      st.view = rebuildView(st, st.rows);
+      const total = st.view.length;
       const maxScroll = Math.max(0, total - MAX_DRAWN_ROWS);
       if (st.scroll > maxScroll) st.scroll = maxScroll;
       if (st.scroll < 0) st.scroll = 0;
       const shown = Math.min(total - st.scroll, MAX_DRAWN_ROWS);
       let ry = y + HEADER_H;
+
+      // search bar (always visible): magnifier glyph + text + clear ✕
+      const searchTop = ry;
+      const searchBot = searchTop + SEARCH_H;
+      st.searchZone = { top: searchTop, bottom: searchBot };
+      const sbBoxW = fullW - 24 - SB_W - 6;
+      ctx.save();
+      ctx.fillStyle = "rgba(8,8,8,0.55)";
+      ctx.strokeStyle = st.searchFocus ? "#5af" : "rgba(255,255,255,0.22)";
+      ctx.lineWidth = st.searchFocus ? 1.5 : 1;
+      ctx.beginPath();
+      ctx.roundRect(12, searchTop + 2, sbBoxW, SEARCH_H - 4, [9]);
+      ctx.fill();
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      const hasQ = !!(st.search || "").trim();
+      ctx.fillStyle = hasQ ? "#eee" : "rgba(255,255,255,0.42)";
+      ctx.font = "10px sans-serif";
+      const ph = hasQ ? st.search : "search rows…";
+      ctx.fillText("🔍", 20, searchTop + SEARCH_H / 2 + 1);
+      ctx.fillText(clampText(ph, Math.max(6, Math.floor(sbBoxW / 5.4) - 18)), 34, searchTop + SEARCH_H / 2 + 1);
+      if (hasQ) {
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
+        ctx.textAlign = "center";
+        ctx.fillText("✕", 12 + sbBoxW - 12, searchTop + SEARCH_H / 2 + 1);
+        st.searchClear = { x: 12 + sbBoxW - 24, y: searchTop + 2, w: 22, h: SEARCH_H - 4 };
+      } else {
+        st.searchClear = null;
+      }
+      ctx.restore();
+      ry += SEARCH_H;
+
       ctx.save();
       for (let i = 0; i < shown; i++) {
-        const row = st.rows[st.scroll + i];
-        ctx.fillStyle = (st.scroll + i) % 2 ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.25)";
-        ctx.fillRect(12, ry + 1, fullW - 24, ROW_H - 2);
+        const row = st.view[st.scroll + i].row;
+        const oi = st.view[st.scroll + i].oi;
+        const freq = row.freq || 0;
+        if (freq > 0) {
+          const a = Math.min(0.34, 0.08 + Math.log2(1 + freq) * 0.05);
+          ctx.fillStyle = "rgba(255,170,60," + a.toFixed(3) + ")";
+        } else {
+          ctx.fillStyle = (st.scroll + i) % 2 ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.25)";
+        }
+        ctx.fillRect(12, ry + 1, fullW - 24 - (freq > 0 ? FREQ_W - 4 : 0), ROW_H - 2);
         // checkbox column (manual pick)
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.font = "12px sans-serif";
         if (row.on) {
           ctx.fillStyle = "#6cf";
-          ctx.fillText("\u2611", 18, ry + ROW_H / 2);
+          ctx.fillText("☑", 18, ry + ROW_H / 2);
         } else {
           ctx.strokeStyle = "rgba(255,255,255,0.5)";
           ctx.strokeRect(13, ry + ROW_H / 2 - 5, 11, 11);
@@ -687,7 +957,7 @@ function makeListWidget(node) {
         ctx.fillStyle = "rgba(255,255,255,0.45)";
         ctx.font = "10px monospace";
         ctx.textAlign = "left";
-        const numTxt = row.num != null ? String(row.num) : String(st.scroll + i + 1);
+        const numTxt = row.num != null ? String(row.num) : String(oi + 1);
         ctx.fillText(numTxt, 30, ry + ROW_H / 2);
         let lx = 52;
         // category chip
@@ -700,9 +970,10 @@ function makeListWidget(node) {
           ctx.fillText(row.cat, 56, ry + ROW_H / 2);
           lx = 56 + cw;
         }
-        // label
+        // label (shrink by the reserved freq column / img marker)
         const hasImg = !!row.img;
-        const avail = fullW - 24 - (lx - 12) - (hasImg ? 18 : 6);
+        const reserved = (freq > 0 ? FREQ_W - 2 : 6) + (hasImg ? 18 : 0);
+        const avail = fullW - 24 - (lx - 12) - reserved;
         const label = clampText(row.pos || row.neg || "(empty)", Math.max(8, avail));
         ctx.fillStyle = row.pos
           ? "#beb"
@@ -713,12 +984,19 @@ function makeListWidget(node) {
         ctx.fillText(label, lx, ry + ROW_H / 2);
         if (hasImg) {
           ctx.textAlign = "right";
-          ctx.fillText("\u25e7", fullW - 18, ry + ROW_H / 2);
+          ctx.fillText("◧", fullW - 24 - (freq > 0 ? FREQ_W - 4 : 0), ry + ROW_H / 2);
         }
-        st.rects.push({ top: ry, bottom: ry + ROW_H, index: st.scroll + i });
+        // usage counter on the right edge
+        if (freq > 0) {
+          ctx.textAlign = "right";
+          ctx.fillStyle = freq >= 5 ? "#ffcc66" : "rgba(140,190,255,0.95)";
+          ctx.font = "9px sans-serif";
+          ctx.fillText("×" + freq, fullW - 14, ry + ROW_H / 2);
+        }
+        st.rects.push({ top: ry, bottom: ry + ROW_H, index: oi });
         ry += ROW_H;
       }
-      // scroll area: arrows + wheel, drawn whenever rows are hidden
+      // scroll area: arrows + wheel + drag scrollbar, drawn when rows hidden
       st.scrollUp = null;
       st.scrollDown = null;
       const canScroll = total > MAX_DRAWN_ROWS;
@@ -729,22 +1007,40 @@ function makeListWidget(node) {
         ctx.font = "bold 11px sans-serif";
         ctx.fillStyle = st.scroll > 0 ? "#9cf" : "rgba(255,255,255,0.2)";
         const upY = ry + 4;
-        ctx.fillText("\u25b2", cx - 14, upY);
-        ctx.fillText("\u25bc", cx + 14, upY);
+        ctx.fillText("▲", cx - 14, upY);
+        ctx.fillText("▼", cx + 14, upY);
         st.scrollUp = { x: cx - 24, y: ry, w: 28, h: 12 };
         st.scrollDown = { x: cx + 4, y: ry, w: 28, h: 12 };
         ctx.fillStyle = "rgba(255,255,255,0.4)";
         ctx.font = "10px sans-serif";
         ctx.textAlign = "center";
         const leftCount = total - (st.scroll + shown);
-        ctx.fillText(leftCount > 0 ? ("\u2193 " + leftCount + " more - wheel / arrows") : "(wheel to scroll)", cx, ry + 15);
+        ctx.fillText(leftCount > 0 ? ("↓ " + leftCount + " more - wheel / arrows / drag") : "(wheel to scroll)", cx, ry + 15);
         rowsBottom = ry + 18;
-      } else if (shown === 0) {
-        ctx.fillStyle = "rgba(255,255,255,0.25)";
-        ctx.font = "10px sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText("(no rows yet - click the header to add)", cx, ry + 12);
-        rowsBottom = ry + 18;
+
+        // drag scrollbar on the right edge of the drawn rows
+        const sbX = fullW - SB_W - 4;
+        const sbY = searchBot + 1;
+        const sbH = rowsBottom - sbY - 1;
+        if (sbH > 24 && shown > 0) {
+          const trackH = sbH;
+          const thumbH = Math.max(16, trackH * (shown / total));
+          const frac = maxScroll > 0 ? st.scroll / maxScroll : 0;
+          const thumbY = sbY + frac * (trackH - thumbH);
+          st.sbZone = { x: sbX, y: sbY, w: SB_W, h: trackH, thumbY: thumbY, thumbH: thumbH, maxScroll: maxScroll };
+          ctx.fillStyle = "rgba(255,255,255,0.08)";
+          ctx.fillRect(sbX, sbY, SB_W, trackH);
+          ctx.fillStyle = st.draggingSb ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.35)";
+          ctx.fillRect(sbX + 2, thumbY + 2, SB_W - 4, Math.max(8, thumbH - 4));
+        }
+      } else {
+        if (shown === 0) {
+          ctx.fillStyle = "rgba(255,255,255,0.25)";
+          ctx.font = "10px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(st.search ? "(no rows match “" + clampText(st.search, 22) + "”)" : "(no rows yet - click the header to add)", cx, ry + 12);
+          rowsBottom = ry + 18;
+        }
       }
       st.rowsAreaBottom = rowsBottom;
       ctx.restore();
@@ -864,13 +1160,36 @@ function makeListWidget(node) {
       const x = pos[0];
       const y = pos[1];
       const st = state(node);
+      // header sort-by-frequency toggle (right edge)
+      if (st.sortBtn && x >= st.sortBtn.x && x <= st.sortBtn.x + st.sortBtn.w &&
+          y >= st.sortBtn.y && y <= st.sortBtn.y + st.sortBtn.h) {
+        toggleFreqSort(node);
+        return true;
+      }
       // header → add/edit
       if (y >= st.widgetY - 1 && y <= st.widgetY + HEADER_H) {
         openEditor(node, null);
         return true;
       }
+      // search bar: click focuses the hidden input; ✕ clears the filter
+      if (st.searchZone && y >= st.searchZone.top && y <= st.searchZone.bottom) {
+        const sx = x;
+        if (st.searchClear && sx >= st.searchClear.x && sx <= st.searchClear.x + st.searchClear.w) {
+          clearSearch();
+          return true;
+        }
+        focusSearch(node);
+        return true;
+      }
+      // rows scrollbar drag (pointer grab anywhere on the track)
+      const viewRows = st.view.length;
+      const maxScr = Math.max(0, viewRows - MAX_DRAWN_ROWS);
+      if (maxScr > 0 && st.sbZone && x >= st.sbZone.x - 2 && x <= st.sbZone.x + st.sbZone.w + 2 &&
+          y >= st.sbZone.y - 2 && y <= st.sbZone.y + st.sbZone.h + 2) {
+        startSbDrag(node, st, event, y);
+        return true;
+      }
       // scroll arrows (visible when more rows than fit)
-      const maxScr = Math.max(0, st.rows.length - MAX_DRAWN_ROWS);
       if (maxScr > 0) {
         const hitZone = (z) => z && x >= z.x - 2 && x <= z.x + z.w + 2 && y >= z.y - 2 && y <= z.y + z.h + 2;
         if (hitZone(st.scrollUp)) {
@@ -1193,11 +1512,12 @@ function installHover() {
         const ly = pt.gy - y0; // node-local y
         const delta = e.deltaY > 0 ? 1 : e.deltaY < 0 ? -1 : 0;
         // rows list scroll (only when the list overflows its area)
-        const totalRows = st0.rows.length;
-        const maxRowScroll = totalRows - MAX_DRAWN_ROWS;
+        const viewRows = st0.view ? st0.view.length : st0.rows.length;
+        const maxRowScroll = viewRows - MAX_DRAWN_ROWS;
         if (maxRowScroll > 0 && st0.rowsAreaBottom) {
-          const rowsTop = st0.widgetY + HEADER_H;
-          const rowsBottom = st0.rowsAreaBottom;
+          const rowsTop = (st0.searchZone && st0.searchZone.bottom) ? st0.searchZone.bottom : st0.widgetY + HEADER_H + SEARCH_H;
+          // stop at the scroll hint row so the ▲/▼ arrows keep working
+          const rowsBottom = st0.rowsAreaBottom - 18;
           if (ly > rowsTop && ly < rowsBottom && lx > 0 && lx < size[0]) {
             if (delta !== 0) {
               st0.scroll = Math.max(0, Math.min(maxRowScroll, st0.scroll + delta * WHEEL_STEP));
@@ -1412,6 +1732,21 @@ function buildRowCard(row, idx, api) {
   idxLabel.textContent = "Row " + (idx + 1);
   idxLabel.className = "esn-idx";
   Object.assign(idxLabel.style, { fontWeight: "bold", minWidth: "46px" });
+  const freqBadge = document.createElement("span");
+  const refreshFreqBadge = () => {
+    const fq = (row.freq || 0) > 0 ? (row.freq | 0) : 0;
+    if (fq > 0) {
+      freqBadge.textContent = "×" + fq + " used";
+      freqBadge.style.color = "#ffcc66";
+      freqBadge.style.display = "";
+      freqBadge.title = "Used " + fq + " time(s) when this node ran";
+    } else {
+      freqBadge.textContent = "";
+      freqBadge.style.display = "none";
+    }
+  };
+  Object.assign(freqBadge.style, { fontSize: "11px", marginLeft: "2px", color: "#ffcc66", fontWeight: "normal" });
+  refreshFreqBadge();
 
   const numWrap = document.createElement("span");
   Object.assign(numWrap.style, { display: "flex", alignItems: "center", gap: "4px", color: "#aaa", fontSize: "11px" });
@@ -1479,7 +1814,7 @@ function buildRowCard(row, idx, api) {
 
   const spacer = document.createElement("span");
   spacer.style.flex = "1";
-  topRow.append(onCb, idxLabel, numWrap, catWrap, up, down, spacer, del);
+  topRow.append(onCb, idxLabel, freqBadge, numWrap, catWrap, up, down, spacer, del);
 
   const fields = document.createElement("div");
   Object.assign(fields.style, { display: "flex", gap: "8px", alignItems: "flex-start", flexWrap: "wrap" });
@@ -1557,6 +1892,10 @@ function buildRowCard(row, idx, api) {
 // Rows working copy + API shared between the list and each card
 function showDialog(node, editIndex, initialTab) {
   closeDialog();
+  // typing belongs to the dialog now, not to the on-node search field
+  if (searchInput && document.activeElement === searchInput) {
+    try { searchInput.blur(); } catch (e) {}
+  }
   syncFromWidget(node);
   const rows = cleanRows(state(node).rows); // working copy
   let pendingFile = state(node).file || "";
@@ -1625,6 +1964,13 @@ function showDialog(node, editIndex, initialTab) {
   checkAllB.addEventListener("click", () => { rows.forEach((r) => { r.on = true; }); applyFilter(); });
   const uncheckAllB = mkBtn("✗ none", { pad: "5px 9px", font: "12px", title: "Untick every row" });
   uncheckAllB.addEventListener("click", () => { rows.forEach((r) => { r.on = false; }); applyFilter(); });
+  const sortFreqB = mkBtn("⇅ by use", { pad: "5px 9px", font: "12px", title: "Sort rows by usage frequency (most used first)" });
+  sortFreqB.addEventListener("click", () => {
+    const ordered = sortRowsByFreq(rows);
+    rows.length = 0;
+    for (const r of ordered) rows.push(r);
+    applyFilter();
+  });
   // category filter: built from all row cats; '' = all
   const catSel = document.createElement("select");
   const allOpt = document.createElement("option");
@@ -1654,6 +2000,7 @@ function showDialog(node, editIndex, initialTab) {
   toolbar.appendChild(importBtn);
   toolbar.appendChild(checkAllB);
   toolbar.appendChild(uncheckAllB);
+  toolbar.appendChild(sortFreqB);
   rowsPanel.appendChild(toolbar);
 
   const hintEl = document.createElement("div");
@@ -1985,6 +2332,7 @@ function showDialog(node, editIndex, initialTab) {
         pos: pos,
         neg: neg,
         img: typeof row.img === "string" ? row.img : "",
+        freq: (typeof row.freq === "number" && row.freq > 0) ? Math.floor(row.freq) : 0,
       });
     });
     return out;
@@ -2306,6 +2654,33 @@ app.registerExtension({
   name: "Ghost.EasyStringNegEditor",
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (!nodeData || nodeData.name !== NODE_CLASS) return;
+
+    // apply usage-frequency counters that the Python side returns through the
+    // "ui" channel after each execution ({"esn_freq": [0, 2, 1, ...]})
+    nodeType.prototype.onExecuted = function (message) {
+      try {
+        const st = this.__esn ? state(this) : null;
+        if (!st || !message || !Array.isArray(message.esn_freq)) return;
+        const freqs = message.esn_freq;
+        if (freqs.length !== st.rows.length) return; // rows changed meanwhile
+        let changed = false;
+        for (let i = 0; i < freqs.length; i++) {
+          const n = Number(freqs[i]);
+          const fq = (Number.isFinite(n) && n > 0) ? Math.floor(n) : 0;
+          if ((st.rows[i].freq || 0) !== fq) {
+            st.rows[i].freq = fq;
+            changed = true;
+          }
+        }
+        if (!changed) return;
+        commitRows(this, st.rows); // persist into widget (or dataset file)
+        try { app.graph?.setDirtyCanvas?.(true, true); } catch (e) {}
+        resizeNode(this);
+      } catch (err) {
+        // the frequency feedback is best-effort; never break the graph on it
+        console.warn("EasyStringNegEditor: onExecuted freq sync failed", err);
+      }
+    };
 
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {

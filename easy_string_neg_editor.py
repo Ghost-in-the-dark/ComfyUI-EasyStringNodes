@@ -15,6 +15,11 @@ Each "row" is {num?, cat?, on?, pos, neg, img}:
   * img   - optional image, stored in the workflow JSON as a downscaled
             data URL so the workflow stays self-contained. The image is a
             UI aid (preview on hover); this Python module never loads it.
+  * freq  - optional usage counter (int >= 0, default 0). The Python side
+            bumps it once per selected row on every run and sends the new
+            counters back through the "ui" channel; the front-end persists
+            them into the row list so the editor can show a by-frequency
+            ranking.
 The row list lives in the hidden "rows" JSON widget and the
 hidden "presets" plain-text widget ("N: 1 2 3" lines, one number set per
 preset); both are edited through the custom front-end dialog (see
@@ -214,6 +219,28 @@ class EasyStringNegEditor:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _as_freq(value):
+        """Non-negative usage counter; anything invalid becomes 0.
+
+        Accepts ints and numeric strings; bools map to 1/0; floats and other
+        types are treated as invalid so a fractional value never truncates
+        into a fake counter.
+        """
+        if value is None:
+            return 0
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, int):
+            return value if value > 0 else 0
+        if isinstance(value, str):
+            try:
+                n = int(float(value.strip()))
+            except (TypeError, ValueError):
+                return 0
+            return n if n > 0 else 0
+        return 0
+
     def _parse_rows(self, rows_value):
         """Turn the widget JSON into a clean [{num, pos, neg, img}, ...] list."""
         if isinstance(rows_value, str):
@@ -258,6 +285,7 @@ class EasyStringNegEditor:
                 "pos": html_to_text(str(item.get("pos") or "")),
                 "neg": html_to_text(str(item.get("neg") or "")),
                 "img": img if isinstance(img, str) else "",
+                "freq": self._as_freq(item.get("freq")),
             })
         return rows
 
@@ -431,7 +459,21 @@ class EasyStringNegEditor:
         negative_output = join_elements(negatives)
         if add_break and positive_output:
             positive_output = positive_output + " BREAK"
-        return (positive_output, negative_output)
+
+        # usage-frequency feedback: bump freq once per row that was actually
+        # selected in this run and hand the updated counters to the front-end
+        # through the ui channel (the JS side stores them back into the rows
+        # widget, so the counters survive across runs).
+        if chosen:
+            ticked_ids = {id(row) for row in chosen}
+            for row in parsed:
+                if id(row) in ticked_ids:
+                    row["freq"] = (row.get("freq") or 0) + 1
+        freq_list = [(row.get("freq") or 0) for row in parsed]
+        return {
+            "ui": {"esn_freq": freq_list},
+            "result": (positive_output, negative_output),
+        }
 
 
 NODE_CLASS_MAPPINGS = {"EasyStringNegEditor": EasyStringNegEditor}
