@@ -460,25 +460,17 @@ function makeListWidget(node) {
         openEditor(node, null);
         return true;
       }
-      // search bar: click focuses the hidden input; ✕ clears the filter
-      if (window.__ESN_DEBUG) {
-        console.log("[ESN-search] mousedown x=" + x + " y=" + y +
-          " widgetY=" + st.widgetY + " sz=" + (st.searchZone ? st.searchZone.top + ".." + st.searchZone.bottom : "null") +
-          " sortBtn=" + (st.sortBtn ? "y" + st.sortBtn.y : "null") + " headerH=" + HEADER_H);
-      }
+      // search bar: click focuses the on-node search (window-capture in
+      // esn_search.js handles activation; returning true here just stops
+      // LiteGraph from treating the click as a row click)
       if (st.searchZone && y >= st.searchZone.top && y <= st.searchZone.bottom) {
         const sx = x;
         if (st.searchClear && sx >= st.searchClear.x && sx <= st.searchClear.x + st.searchClear.w) {
-          if (window.__ESN_DEBUG) console.log("[ESN-search] clear ✕ hit");
           clearSearch();
           return true;
         }
-        if (window.__ESN_DEBUG) console.log("[ESN-search] calling focusSearch");
         focusSearch(node);
         return true;
-      }
-      if (window.__ESN_DEBUG && y >= st.widgetY - 1 && y <= st.widgetY + HEADER_H) {
-        console.log("[ESN-search] header hit (not search)");
       }
       // rows scrollbar drag (pointer grab anywhere on the track)
       const viewRows = st.view.length;

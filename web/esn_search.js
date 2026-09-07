@@ -1,99 +1,231 @@
-// EasyStringNegEditor — on-node search input.
+// EasyStringNegEditor — on-node search bar.
 //
-// The node-level search bar draws on the canvas but its text editing uses a
-// single off-screen DOM <input> (focused on demand) so the graph keyboard
-// shortcuts keep working while typing. Kept in its own module because both
-// the canvas widget (esn_widget.js) and the dialog (esn_dialog.js) touch it.
+// The search bar draws on the node canvas (esn_widget.js) and its text
+// editing does NOT rely on a DOM <input> being focused. Both the legacy and
+// the new ComfyUI front-ends keep keyboard focus on the graph canvas, and
+// legacy LiteGraph sometimes does not deliver widget.mouse() events for the
+// bar's zone, so the bar is driven by global capture listeners instead:
+//
+//   * activation: a capture-phase pointerdown on window hit-tests the search
+//     capsule of every EasyStringNegEditor node and activates the topmost
+//     one, swallowing the click so LiteGraph does not also treat it as a row
+//     click;
+//   * typing: a capture-phase keydown on window edits the active node's
+//     st.search directly (printable characters in any layout, Backspace,
+//     Escape clears, Enter deactivates). Keys with Ctrl/Cmd/Alt and any
+//     keypress while a real DOM field (dialog input, etc.) has focus pass
+//     through untouched, so ComfyUI shortcuts and dialog typing keep working;
+//   * blur: a pointerdown outside every search capsule deactivates the bar.
+//
+// No hidden <input> is created, so the bar behaves identically on both UIs
+// and never depends on focus() succeeding for an invisible element.
 
 import { app } from "../../scripts/app.js";
-import { state } from "./esn_core.js";
+import { state, NODE_CLASS } from "./esn_core.js";
 
-// --- on-node search (hidden DOM <input> focused on demand) ---
-let searchInput = null;
-let searchNode = null; // node currently being searched
+// --- on-node search (canvas bar driven by window capture listeners) ---
+let searchNode = null; // node whose on-node search bar is active (or null)
+let installed = false;
 
-function ensureSearchInput() {
-  if (searchInput && searchInput.parentNode) return searchInput;
-  searchInput = document.createElement("input");
-  searchInput.type = "text";
-  searchInput.setAttribute("autocomplete", "off");
-  searchInput.setAttribute("spellcheck", "false");
-  Object.assign(searchInput.style, {
-    position: "fixed", left: "0", top: "0", width: "1px", height: "1px",
-    opacity: "0", border: "0", padding: "0", margin: "0", outline: "none",
-    zIndex: "-1", pointerEvents: "none",
-  });
-  searchInput.addEventListener("input", () => {
-    const st = searchNode ? state(searchNode) : null;
-    if (st) {
-      st.search = searchInput.value || "";
-      app.graph?.setDirtyCanvas?.(true, true);
-    }
-  });
-  searchInput.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      clearSearch();
-      e.stopPropagation();
-    } else if (e.key === "Enter") {
-      e.stopPropagation();
-    } else {
-      // keep graph hotkeys from firing while typing
-      e.stopPropagation();
-    }
-  });
-  searchInput.addEventListener("blur", () => {
-    const st = searchNode ? state(searchNode) : null;
-    if (st) st.searchFocus = false;
-    app.graph?.setDirtyCanvas?.(true, true);
-  });
-  searchInput.addEventListener("focus", () => {
-    const st = searchNode ? state(searchNode) : null;
-    if (st) st.searchFocus = true;
-    app.graph?.setDirtyCanvas?.(true, true);
-  });
-  document.body.appendChild(searchInput);
-  return searchInput;
+function activeState() {
+  if (!searchNode || !searchNode.__esn) { searchNode = null; return null; }
+  const st = searchNode.__esn;
+  if (!st.searchFocus) { searchNode = null; return null; }
+  return st;
+}
+
+function setDirty() {
+  try { app.graph?.setDirtyCanvas?.(true, true); } catch (err) {}
+}
+
+function deactivate() {
+  const st = searchNode && searchNode.__esn ? searchNode.__esn : null;
+  if (st) st.searchFocus = false;
+  searchNode = null;
+  setDirty();
 }
 
 function focusSearch(node) {
+  if (!node || !node.__esn) return;
+  const st = node.__esn;
+  if (typeof st.search !== "string") st.search = "";
   searchNode = node;
-  const inp = ensureSearchInput();
-  const st = state(node);
-  if (window.__ESN_DEBUG) {
-    console.log("[ESN-search] focusSearch node=" + (node.title || node.type) +
-      " inputInDom=" + !!(inp && inp.parentNode) +
-      " searchFocusWas=" + st.searchFocus +
-      " activeEl=" + (document.activeElement === inp ? "input" : String(document.activeElement && document.activeElement.tagName)));
-  }
-  if (st.searchFocus) {
-    // already focused: keep focus and select-all so typing replaces the text
-    inp.focus();
-    inp.select();
-    if (window.__ESN_DEBUG) console.log("[ESN-search] was focused: re-focus+select, now active=" + (document.activeElement === inp));
-    return;
-  }
-  inp.value = st.search || "";
   st.searchFocus = true;
-  inp.focus();
-  inp.select();
-  if (window.__ESN_DEBUG) console.log("[ESN-search] focused, now active=" + (document.activeElement === inp) + " val='" + inp.value + "'");
+  setDirty();
 }
 
 function clearSearch() {
-  const st = searchNode ? state(searchNode) : null;
-  if (searchInput) searchInput.value = "";
+  const st = activeState();
   if (st) {
     st.search = "";
     st.searchFocus = false;
-    if (searchInput) searchInput.blur();
-    app.graph?.setDirtyCanvas?.(true, true);
   }
+  searchNode = null;
+  setDirty();
 }
-
-export { searchInput, focusSearch, clearSearch, blurActiveSearch };
 
 function blurActiveSearch() {
-  if (searchInput && document.activeElement === searchInput) {
-    try { searchInput.blur(); } catch (e) {}
-  }
+  deactivate();
 }
+
+// --- activation / deactivation by click -------------------------------
+
+function canvasPoint(e) {
+  const canvas = app.canvas;
+  if (!canvas || !canvas.canvas) return null;
+  try { if (typeof canvas.adjustMouseEvent === "function") canvas.adjustMouseEvent(e); } catch (err) {}
+  try {
+    if (typeof canvas.convertEventToCanvasOffset === "function") {
+      const pt = canvas.convertEventToCanvasOffset(e);
+      if (pt && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) return { gx: pt[0], gy: pt[1] };
+    }
+  } catch (err) {}
+  try {
+    const rect = canvas.canvas.getBoundingClientRect();
+    const ds = canvas.ds || {};
+    const scale = ds.scale || 1;
+    const ox = ds.offset ? ds.offset[0] : 0;
+    const oy = ds.offset ? ds.offset[1] : 0;
+    return { gx: (e.clientX - rect.left) / scale + ox, gy: (e.clientY - rect.top) / scale + oy };
+  } catch (err) { return null; }
+}
+
+// topmost ESN node whose search capsule contains the click, or null
+function searchCapsuleHit(e) {
+  const pt = canvasPoint(e);
+  if (!pt) return null;
+  const graph = app.graph;
+  if (!graph || !graph._nodes) return null;
+  for (let i = graph._nodes.length - 1; i >= 0; i--) {
+    const node = graph._nodes[i];
+    if (!node || node.type !== NODE_CLASS || !node.__esn) continue;
+    const stn = node.__esn;
+    const x0 = node.pos ? node.pos[0] : 0;
+    const y0 = node.pos ? node.pos[1] : 0;
+    const size = node.size || [220, 100];
+    if (pt.gx < x0 || pt.gx > x0 + size[0] || pt.gy < y0 || pt.gy > y0 + size[1]) continue;
+    const lx = pt.gx - x0;
+    const ly = pt.gy - y0;
+    const sz = stn.searchZone;
+    if (sz && ly >= sz.top && ly <= sz.bottom) return { node, st: stn, lx };
+    return null; // over this node but not its capsule -> not a search click
+  }
+  return null;
+}
+
+function isCanvasEvent(e) {
+  const t = e.target;
+  if (!t) return false;
+  try {
+    const cv = app.canvas && app.canvas.canvas;
+    if (cv && t === cv) return true;
+    if (typeof t.closest === "function" && t.closest("canvas")) return true;
+  } catch (err) {}
+  return false;
+}
+
+function onPointerDownCapture(e) {
+  if (e.button != null && e.button !== 0) return;
+  const onCanvas = isCanvasEvent(e);
+  const hit = onCanvas ? searchCapsuleHit(e) : null;
+  if (hit) {
+    // click on a search capsule: activate that node's bar (or keep it), and
+    // swallow the click so LiteGraph does not also treat it as a row click
+    if (hit.st.searchClear && hit.lx >= hit.st.searchClear.x && hit.lx <= hit.st.searchClear.x + hit.st.searchClear.w) {
+      // ✕ clears the filter of this node (and deactivates)
+      searchNode = hit.node;
+      hit.st.search = "";
+      hit.st.searchFocus = false;
+      searchNode = null;
+      setDirty();
+    } else {
+      const st = activeState();
+      if (!st || searchNode !== hit.node) {
+        focusSearch(hit.node);
+      } else {
+        hit.st.searchFocus = true; // keep active
+        setDirty();
+      }
+    }
+    if (e.preventDefault) e.preventDefault();
+    if (e.stopPropagation) e.stopPropagation();
+    return;
+  }
+  // a click anywhere outside every search capsule stops the search
+  if (activeState()) deactivate();
+}
+
+// --- typing ------------------------------------------------------------
+
+function isTypingInDom() {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return true;
+  try { if (el.isContentEditable) return true; } catch (err) {}
+  return false;
+}
+
+function onKeyDownCapture(e) {
+  const st = activeState();
+  if (!st) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return; // ComfyUI shortcuts
+  if (isTypingInDom()) return; // real DOM field (dialog) is being typed in
+  const k = e.key;
+  if (k === "Escape") {
+    e.preventDefault(); e.stopPropagation();
+    clearSearch();
+    return;
+  }
+  if (k === "Enter") {
+    e.preventDefault(); e.stopPropagation();
+    deactivate();
+    return;
+  }
+  if (k === "Backspace") {
+    e.preventDefault(); e.stopPropagation();
+    st.search = st.search.slice(0, -1);
+    setDirty();
+    return;
+  }
+  if (k === "Delete") {
+    e.preventDefault(); e.stopPropagation();
+    st.search = "";
+    setDirty();
+    return;
+  }
+  if (k.length === 1) {
+    e.preventDefault(); e.stopPropagation();
+    st.search += k;
+    setDirty();
+    return;
+  }
+  // arrows / Tab / F-keys etc.: leave to the graph
+}
+
+function onPasteCapture(e) {
+  const st = activeState();
+  if (!st) return;
+  if (isTypingInDom()) return;
+  const txt = e.clipboardData ? e.clipboardData.getData("text") : "";
+  if (!txt) return;
+  e.preventDefault(); e.stopPropagation();
+  st.search += txt.replace(/[\r\n]+/g, " ");
+  setDirty();
+}
+
+// --- install (once) ----------------------------------------------------
+// The capture listeners must exist from module load: activation itself flows
+// through onPointerDownCapture, so it cannot be installed lazily from
+// focusSearch (that would be a chicken-and-egg deadlock).
+function ensureInstalled() {
+  if (installed) return;
+  installed = true;
+  window.addEventListener("pointerdown", onPointerDownCapture, true);
+  window.addEventListener("mousedown", onPointerDownCapture, true);
+  window.addEventListener("keydown", onKeyDownCapture, true);
+  window.addEventListener("paste", onPasteCapture, true);
+}
+ensureInstalled();
+
+export { focusSearch, clearSearch, blurActiveSearch };
