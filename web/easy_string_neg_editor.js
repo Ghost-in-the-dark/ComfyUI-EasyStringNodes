@@ -1120,18 +1120,36 @@ function installHover() {
     // when the wheel belongs to one of our lists we stop propagation so
     // the workflow is not zoomed instead of the list scrolling.
     function graphPointFromEvent(e) {
-      const canvasEl = app.canvas && app.canvas.canvas;
-      if (!canvasEl) return null;
       try {
-        if (typeof app.canvas.adjustMouseEvent === "function") app.canvas.adjustMouseEvent(e);
+        const cv = app.canvas;
+        if (!cv) return null;
+        // Prefer litegraph's own screen->world conversion so the result always
+        // matches where the nodes are drawn (it uses rect + ds.scale/ds.offset
+        // with the SAME sign conventions as the renderer).
+        if (typeof cv.convertEventToCanvasOffset === "function") {
+          const pt = cv.convertEventToCanvasOffset(e);
+          if (pt && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) {
+            return { gx: pt[0], gy: pt[1] };
+          }
+        }
+        if (typeof cv.adjustMouseEvent === "function") {
+          cv.adjustMouseEvent(e);
+          if (Number.isFinite(e.canvasX) && Number.isFinite(e.canvasY)) {
+            return { gx: e.canvasX, gy: e.canvasY };
+          }
+        }
+        // Manual fallback: same math as DragAndScale.convertCanvasToOffset,
+        // world = (client - rect) / scale - offset.
+        const canvasEl = cv.canvas;
+        if (!canvasEl) return null;
         const rect = canvasEl.getBoundingClientRect();
-        const scale = app.canvas.ds ? app.canvas.ds.scale : 1;
-        const ox = app.canvas.ds ? app.canvas.ds.offset[0] : 0;
-        const oy = app.canvas.ds ? app.canvas.ds.offset[1] : 0;
-        return {
-          gx: (e.clientX - rect.left) / scale + ox,
-          gy: (e.clientY - rect.top) / scale + oy,
-        };
+        const ds = cv.ds || {};
+        const scale = ds.scale || 1;
+        const ox = ds.offset ? ds.offset[0] : 0;
+        const oy = ds.offset ? ds.offset[1] : 0;
+        const xr = e.clientX - rect.left;
+        const yr = e.clientY - rect.top;
+        return { gx: xr / scale - ox, gy: yr / scale - oy };
       } catch (err) {
         return null;
       }
@@ -1144,11 +1162,22 @@ function installHover() {
       if (!graph || !graph._nodes) return false;
       const canvasEl = app.canvas && app.canvas.canvas;
       if (!canvasEl) return false;
-      // only when the pointer is over the graph canvas itself; DOM UI (menus,
-      // panels) keeps its own wheel handling
-      const t = e.target;
-      if (t && t !== canvasEl && !(t instanceof HTMLCanvasElement) &&
-          !(t.closest && t.closest("canvas"))) return false;
+      // Decide by hit-testing the pointer position rather than by e.target:
+      // frontends may wrap the canvas or dispatch synthetic events, but the
+      // element under the cursor tells us reliably whether the wheel is aimed
+      // at the graph canvas (where our nodes live) or at DOM UI.
+      try {
+        const el = document.elementFromPoint(e.clientX, e.clientY);
+        let ok = false;
+        if (el && (el === canvasEl || el instanceof HTMLCanvasElement)) {
+          ok = true;
+        } else if (el && typeof el.closest === "function" && el.closest("canvas")) {
+          ok = true;
+        }
+        if (!ok) return false;
+      } catch (err) {
+        return false;
+      }
       const pt = graphPointFromEvent(e);
       if (!pt) return false;
       // topmost node first (later nodes are drawn on top)
@@ -1196,15 +1225,45 @@ function installHover() {
       }
       return false;
     }
-    function onDocWheelCapture(e) {
+    // Shared handler: scroll the list when the wheel is over one of our
+    // scrollable lists, otherwise leave the event alone (zoom/pan still work).
+    let lastDbg = 0;
+    function onWheelCapture(e) {
       if (dialog) return; // the dialog has its own scrollers
-      if (hitScrollableList(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-        hideHover();
+      try {
+        const hit = hitScrollableList(e);
+        // Diagnostic aid: enable with  window.__ESN_DEBUG = true  in the
+        // browser console, then wheel over the node and paste the output.
+        if (window.__ESN_DEBUG) {
+          const now = Date.now();
+          if (now - lastDbg > 400) {
+            lastDbg = now;
+            const cv = app.canvas;
+            const ds = cv && cv.ds ? cv.ds : {};
+            const dsg = ds.scale != null ? ds.scale.toFixed(3) : "?";
+            const dso = ds.offset ? "[" + ds.offset[0].toFixed(1) + "," + ds.offset[1].toFixed(1) + "]" : "?";
+            const cn = (window.graph && window.graph._nodes ? window.graph._nodes.length : -1);
+            console.log("[ESN-wheel] phase=" + (e.eventPhase) + " deltaY=" + e.deltaY +
+              " hit=" + hit + " canvasScale=" + dsg + " dsOffset=" + dso +
+              " nodes=" + cn + " target=" + (e.target && e.target.tagName));
+          }
+        }
+        if (hit) {
+          e.preventDefault();
+          e.stopPropagation();
+          hideHover();
+        }
+      } catch (err) {
+        // never break the canvas because of our hit-testing
       }
     }
-    document.addEventListener("wheel", onDocWheelCapture, { capture: true, passive: false });
+    // document capture runs before any canvas bubble listener; also attach to
+    // the canvas itself in the capture phase (canvas capture runs before
+    // canvas bubble handlers that zoom) and to window for the newest
+    // frontends that listen on window.
+    document.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
+    canvas.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
+    window.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
     canvas.addEventListener("pointerdown", hideHover);
   }
   attach();
