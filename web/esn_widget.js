@@ -25,6 +25,11 @@ let sbDragNode = null;
 function startSbDrag(node, st, event, y) {
   const zone = st.sbZone;
   if (!zone) return;
+  // safety net: if a previous drag never received its pointerup (ComfyUI /
+  // LiteGraph can swallow it with stopPropagation, or the button was released
+  // outside the browser window), finish it before starting a new one so the
+  // scrollbar can never stay bound to the cursor.
+  if (sbDragNode && sbDragNode !== node) endSbDrag();
   sbDragNode = node;
   st.draggingSb = true;
   st.sbStartClientY = (event && typeof event.clientY === "number") ? event.clientY : y;
@@ -37,15 +42,50 @@ function startSbDrag(node, st, event, y) {
   try { event.preventDefault(); } catch (e) {}
   try { event.stopPropagation(); } catch (e) {}
   app.graph?.setDirtyCanvas?.(true, true);
-  // move + up on window so dragging outside the widget keeps working
-  window.addEventListener("pointermove", onSbMove, { passive: false });
-  window.addEventListener("pointerup", onSbUp);
-  window.addEventListener("pointercancel", onSbUp);
+  // Take over the pointer on the canvas: the browser then keeps delivering
+  // pointermove/pointerup to us even when the cursor leaves the canvas or the
+  // button is released outside the window (which would otherwise produce no
+  // pointerup at all and leave the drag stuck).
+  try {
+    const cv = app.canvas && app.canvas.canvas;
+    if (cv && typeof cv.setPointerCapture === "function" && event && event.pointerId != null) {
+      cv.setPointerCapture(event.pointerId);
+    }
+  } catch (err) {}
+  // Listen in the CAPTURE phase on window: capture runs before any canvas
+  // handler, so ComfyUI / LiteGraph stopPropagation on pointerup (or on any
+  // pointermove over their own overlays) can no longer keep the up/move from
+  // reaching us. Blur ends the drag too (alt-tab etc.).
+  window.addEventListener("pointermove", onSbMove, { capture: true, passive: false });
+  window.addEventListener("pointerup", onSbUp, { capture: true });
+  window.addEventListener("pointercancel", onSbUp, { capture: true });
+  window.addEventListener("blur", endSbDrag);
+}
+
+function endSbDrag() {
+  const node = sbDragNode;
+  sbDragNode = null;
+  if (node) {
+    const st = state(node);
+    st.draggingSb = false;
+    app.graph?.setDirtyCanvas?.(true, true);
+  }
+  window.removeEventListener("pointermove", onSbMove, { capture: true });
+  window.removeEventListener("pointerup", onSbUp, { capture: true });
+  window.removeEventListener("pointercancel", onSbUp, { capture: true });
+  window.removeEventListener("blur", endSbDrag);
 }
 
 function onSbMove(e) {
   const node = sbDragNode;
   if (!node) return;
+  // final safety net: if the pointerup was lost (e.g. released over a browser
+  // UI element that stopped the event), any move with no pressed button ends
+  // the drag immediately instead of letting the thumb chase the cursor.
+  if (typeof e.buttons === "number" && (e.buttons & 1) === 0) {
+    endSbDrag();
+    return;
+  }
   const st = state(node);
   const zone = st.sbZone;
   if (!zone) return;
@@ -66,16 +106,7 @@ function onSbMove(e) {
 }
 
 function onSbUp() {
-  const node = sbDragNode;
-  sbDragNode = null;
-  if (node) {
-    const st = state(node);
-    st.draggingSb = false;
-    app.graph?.setDirtyCanvas?.(true, true);
-  }
-  window.removeEventListener("pointermove", onSbMove);
-  window.removeEventListener("pointerup", onSbUp);
-  window.removeEventListener("pointercancel", onSbUp);
+  endSbDrag();
 }
 
 function makeListWidget(node) {
