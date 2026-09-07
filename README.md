@@ -19,6 +19,7 @@ All nodes are pure Python (standard library only) — no extra packages are requ
 | \`EasyStringSelector\` | Easy String Selector | Text Processing | V2 + preset-driven line selection + trigger gate |
 | \`EasyStringSelectorNeg\` | Easy String Selector Neg | Text Processing | Split selected lines into positive and negative prompts |
 | \`ConcatenatePromptsNode\` | Concatenate Prompts | Text Processing | Join the connected prompt inputs into one string |
+| \`EasyStringNegEditor\` | Easy String Neg Editor | Text Processing | SelectorNeg-style positive/negative builder with a visual row editor + image hover preview |
 
 ## Installation
 
@@ -144,6 +145,38 @@ Each selected line may contain \`positive --- negative\`. The part before the fi
 
 *Example (apply_weight = true, weight = 1.0):* \`1: cat --- dog\` / \`2: bird\`, selection \`1,2\` → positive \`(cat:1), (bird:1)\`, negative \`(dog:1)\`.
 
+## EasyStringNegEditor
+
+*SelectorNeg-style* positive/negative builder backed by a **visual row editor**. The node works on both the classic (legacy) ComfyUI frontend and the new Vue-based frontend.
+
+Each row has three parts: a **positive** prompt, a **negative** prompt and an optional **image**. Images are stored in the workflow JSON itself (downscaled, as a data URL), so the workflow stays self-contained and needs no upload; the image is only a UI aid — it is shown in a preview when you hover the row, and is never sent to the API prompt.
+
+**Inputs**
+
+| Input | Type | Default | Notes |
+| --- | --- | --- | --- |
+| \`rows\` | STRING (JSON) | 2 demo rows | \`[{pos, neg, img}, …]\`; edit it through the **Add / Edit rows** button, not by hand |
+| \`line_numbers\` | STRING | \`1\` | rows to use when \`select_all\` is off (\`1,3\` or \`2-4\`) |
+| \`select_all\` | BOOLEAN | \`true\` | \`true\` = use every row, \`false\` = use \`line_numbers\` |
+| \`weight\` | FLOAT (slider) | \`1.0\` | element weight |
+| \`apply_weight\` | BOOLEAN | \`true\` | rewrite each element as \`(text:weight)\` |
+| \`add_break\` | BOOLEAN | \`false\` | append \` BREAK\` to the positive output |
+| \`preset_trigger\` | BOOLEAN (input) | \`true\` | enable gate; when \`false\` the node raises an error |
+
+**Outputs:** \`positive_prompt\` (STRING), \`negative_prompt\` (STRING)
+
+Rows behave exactly like \`positive --- negative\` lines in *EasyStringSelectorNeg*: row text is split into comma-separated elements (respecting \`()\`/\`[]\`/\`{}\`), each element is optionally re-weighted, positives are joined to the positive output and negatives to the negative output.
+
+**Using the editor**
+
+- Click the **✎ Add / Edit rows** button on the node to open the dialog.
+- **Add row** appends a new row; each card has ↑/↓ to reorder, 🗑 to delete, and **Positive**/**Negative** textareas.
+- Click (or drag & drop an image onto) the image square, or paste from the clipboard, to attach an image to a row.
+- **Save** writes the rows back into the \`rows\` widget; **Cancel** (or Esc) discards the changes.
+- Hovering a drawn row shows a floating preview with that row's image (when it has one).
+
+> The hidden textarea that stores \`rows\` keeps the standard widget name, so workflows, copy/paste and the API prompt work unchanged. The custom list widget never enters the API prompt.
+
 ## ConcatenatePromptsNode
 
 Joins the **connected** prompt inputs into one space-separated string. Inputs are optional: only the ones you wire contribute to the output, and they are joined in numerical order (\`prompt_2\` before \`prompt_10\`).
@@ -169,6 +202,7 @@ API-format examples live in [examples/workflows](examples/workflows):
 - \`easy_string_v2_weighted.json\` — *EasyStringV2*, weight elements of one line
 - \`easy_string_selector_preset.json\` — *EasyStringSelector*, preset-driven selection
 - \`selector_neg_positive_negative.json\` — *EasyStringSelectorNeg*, positive/negative split
+- \`easy_string_neg_editor.json\` — *EasyStringNegEditor*, two demo rows
 
 Load them with the ComfyUI **API-format** workflow loader, or POST the JSON to the \`/prompt\` endpoint.
 

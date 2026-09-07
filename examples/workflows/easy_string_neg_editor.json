@@ -1,0 +1,17 @@
+{
+  "1": {
+    "inputs": {
+      "rows": "[{\"pos\": \"a cute cat\", \"neg\": \"dog, blurry\", \"img\": \"\"},{\"pos\": \"a bird in flight\", \"neg\": \"watermark\", \"img\": \"\"}]",
+      "line_numbers": "1",
+      "select_all": true,
+      "weight": 1.1,
+      "apply_weight": true,
+      "add_break": false,
+      "preset_trigger": true
+    },
+    "class_type": "EasyStringNegEditor",
+    "_meta": {
+      "title": "Easy String Neg Editor - rows with previews"
+    }
+  }
+}

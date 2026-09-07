@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from easy_string import EasyString
 from easy_stringV2 import EasyStringSelector, EasyStringSelectorNeg, EasyStringV2
 from Concatenate_prompts import ConcatenatePromptsNode
+from easy_string_neg_editor import EasyStringNegEditor
 from utils import (
     format_weight,
     html_to_text,
@@ -203,6 +204,106 @@ def test_concatenate_sorts_and_skips_blank():
         prompt_1="a", prompt_2=None, prompt_10="b", prompt_3="  "
     )
     assert out == "a b"
+
+
+# ------------------------------------------------- EasyStringNegEditor
+
+ROWS_JSON = (
+    '[{"pos": "a cute cat", "neg": "dog, blurry", "img": ""},'
+    '{"pos": "a bird in flight", "neg": "watermark", "img": ""}]'
+)
+
+
+def test_neg_editor_all_rows_plain():
+    node = EasyStringNegEditor()
+    pos, neg = node.process(ROWS_JSON, apply_weight=False)
+    assert pos == "a cute cat, a bird in flight"
+    assert neg == "dog, blurry, watermark"
+
+
+def test_neg_editor_single_row_selection():
+    node = EasyStringNegEditor()
+    pos, neg = node.process(
+        ROWS_JSON, line_numbers="2", select_all=False, apply_weight=False
+    )
+    assert pos == "a bird in flight"
+    assert neg == "watermark"
+
+
+def test_neg_editor_break():
+    node = EasyStringNegEditor()
+    pos, neg = node.process(ROWS_JSON, apply_weight=False, add_break=True)
+    assert pos == "a cute cat, a bird in flight BREAK"
+    assert neg == "dog, blurry, watermark"
+
+
+def test_neg_editor_weight_applied():
+    node = EasyStringNegEditor()
+    pos, neg = node.process(ROWS_JSON, weight=1.2, apply_weight=True)
+    assert pos == "(a cute cat:1.2), (a bird in flight:1.2)"
+    assert neg == "(dog:1.2), (blurry:1.2), (watermark:1.2)"
+
+
+def test_neg_editor_html_cleaned():
+    node = EasyStringNegEditor()
+    html_rows = '[{"pos": "<p>cat</p><br><p>dog</p>", "neg": "x", "img": ""}]'
+    pos, neg = node.process(html_rows, apply_weight=False)
+    assert pos == "cat dog"
+    assert neg == "x"
+
+
+def test_neg_editor_trigger_blocked():
+    node = EasyStringNegEditor()
+    with raises(ValueError):
+        node.process(ROWS_JSON, preset_trigger=False)
+
+
+def test_neg_editor_bad_json_raises():
+    node = EasyStringNegEditor()
+    with raises(ValueError):
+        node.process("not json at all")
+
+
+def test_neg_editor_non_list_raises():
+    node = EasyStringNegEditor()
+    with raises(ValueError):
+        node.process('{"pos": "cat"}')
+
+
+def test_neg_editor_no_rows_raises():
+    node = EasyStringNegEditor()
+    with raises(ValueError):
+        node.process("[]")
+
+
+def test_neg_editor_no_match_raises():
+    node = EasyStringNegEditor()
+    with raises(ValueError):
+        node.process(ROWS_JSON, line_numbers="9", select_all=False)
+
+
+def test_neg_editor_row_keeps_image_out_of_output():
+    node = EasyStringNegEditor()
+    with_img = (
+        '[{"pos": "cat", "neg": "dog", "img": "data:image/png;base64,AAA"},'
+        '{"pos": "bird", "neg": "fish", "img": "data:image/png;base64,BBB"}]'
+    )
+    pos, neg = node.process(with_img, apply_weight=False)
+    assert pos == "cat, bird"
+    assert neg == "dog, fish"
+    assert "base64" not in pos and "base64" not in neg
+
+
+def test_neg_editor_invalid_row_type_raises():
+    node = EasyStringNegEditor()
+    with raises(ValueError):
+        node.process('[{"pos": "cat", "neg": "dog"}, "oops"]')
+
+
+def test_neg_editor_empty_selection_spec_raises():
+    node = EasyStringNegEditor()
+    with raises(ValueError):
+        node.process(ROWS_JSON, line_numbers="", select_all=False)
 
 
 # ---------------------------------------------------------------- runner
