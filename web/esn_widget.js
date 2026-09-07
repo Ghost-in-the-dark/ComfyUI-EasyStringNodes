@@ -501,6 +501,11 @@ function makeListWidget(node) {
             const row = st.rows[r.index];
             if (row) {
               row.on = !row.on;
+              if (window.__ESN_DEBUG) console.log("[ESN-cb] toggle x=" + x + " y=" + y +
+                " oi=" + r.index + " num=" + (row.num != null ? row.num : "-") +
+                " cat=" + (row.cat || "-") + " on=" + row.on +
+                " file=" + JSON.stringify(st.file) + " rowsLen=" + st.rows.length +
+                " label=" + JSON.stringify((row.pos || row.neg || "").slice(0, 40)));
               commitRows(node, st.rows); // dataset-aware (file vs widget)
               app.graph?.setDirtyCanvas?.(true, true);
             }

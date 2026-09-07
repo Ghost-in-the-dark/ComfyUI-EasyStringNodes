@@ -276,7 +276,14 @@ let fileSaveTimer = null;
 function persistFileNow(node) {
   const st = state(node);
   if (!st.file) return;
+  if (window.__ESN_DEBUG) {
+    const onRows = st.rows.filter((r) => r && r.on !== false);
+    console.log("[ESN-persist] saving file=" + st.file + " rows=" + st.rows.length +
+      " on=true count=" + onRows.length +
+      " firstOn=" + JSON.stringify(onRows.slice(0, 3).map((r) => (r.num != null ? "#" + r.num : "?") + ":" + (r.cat || "-"))));
+  }
   dsSave(st.file, st.rows, st.presets).then((res) => {
+    if (window.__ESN_DEBUG) console.log("[ESN-persist] save result ok=" + !!(res && res.ok));
     if (!res) console.warn("EasyStringNegEditor: could not save dataset " + st.file);
   });
 }
