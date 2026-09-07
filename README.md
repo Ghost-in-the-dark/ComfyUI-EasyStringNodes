@@ -1,149 +1,176 @@
 # ComfyUI Easy String Nodes
 
-A set of lightweight, dependency-free text-processing nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI): line selection from multiline text, prompt weighting with the `(tag:weight)` syntax, positive/negative prompt splitting, and prompt concatenation.
+A set of lightweight, dependency-free text-processing nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI):
 
-All nodes are pure Python (standard library only) — no extra packages are required.
+- pick lines from a numbered multiline text by their **original** numbers;
+- re-weight every comma-separated element with the \`(tag:weight)\` syntax;
+- drive the selection from **presets** and gate a node with a **trigger** input;
+- split lines into **positive / negative** prompts;
+- concatenate prompt strings into one.
+
+All nodes are pure Python (standard library only) — no extra packages are required, and tests run without ComfyUI.
 
 ## Nodes
 
 | Node | Display name | Category | Description |
 | --- | --- | --- | --- |
-| `EasyString` | easy_string | Text Processing | Pick specific lines from a numbered multiline input |
-| `EasyStringV2` | Easy String V2 | Text Processing | Pick lines and re-weight every comma-separated element as `(text:weight)` |
-| `EasyStringSelector` | Easy String Selector | Text Processing | V2 + preset-based line selection |
-| `EasyStringSelectorNeg` | Easy String Selector Neg | Text Processing | Split each selected line into a positive and a negative prompt |
-| `ConcatenatePromptsNode` | Concatenate Prompts | Custom | Join up to 15 prompt inputs into a single string |
+| \`EasyString\` | Easy String | Text Processing | Pick lines from a numbered multiline input |
+| \`EasyStringV2\` | Easy String V2 | Text Processing | Pick lines and re-weight every element as \`(text:weight)\` |
+| \`EasyStringSelector\` | Easy String Selector | Text Processing | V2 + preset-driven line selection + trigger gate |
+| \`EasyStringSelectorNeg\` | Easy String Selector Neg | Text Processing | Split selected lines into positive and negative prompts |
+| \`ConcatenatePromptsNode\` | Concatenate Prompts | Text Processing | Join the connected prompt inputs into one string |
 
 ## Installation
 
 ### ComfyUI Manager (recommended)
-Open **ComfyUI Manager → Install Custom Nodes** and search for `Easy String Nodes`, then restart ComfyUI.
+Open **ComfyUI Manager → Install Custom Nodes**, search for \`Easy String Nodes\`, then restart ComfyUI.
 
 ### Manual
-```bash
+\`\`\`bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/Ghost-in-the-dark/ComfyUI-EasyStringNodes.git
-```
+\`\`\`
 
-Restart ComfyUI. The nodes appear in the node menu under **Text Processing** (and **Custom** for *Concatenate Prompts*).
+Restart ComfyUI — all nodes appear under **Text Processing**. \`pyproject.toml\` is included so the repository can later be published to the [ComfyUI Registry](https://docs.comfy.org/registry/).
 
-No registry publishing is required for local use; `pyproject.toml` is included so the repository can later be published to the [ComfyUI Registry](https://docs.comfy.org/registry/).
+## Line selection syntax
+
+Every node that selects lines accepts a small spec language in its \`line_numbers\` (and preset) fields:
+
+| Spec | Meaning |
+| --- | --- |
+| \`1\` | line 1 |
+| \`1,3\` | lines 1 and 3 (in this order) |
+| \`2-4\` | lines 2, 3 and 4 (inclusive range) |
+| \`1,1\` | line 1 twice (duplicates are kept) |
+
+A line written as \`N: content\` is addressed by its **explicit number N** (e.g. \`10: cat\` is selected with \`10\`). Lines without a \`N: \` prefix are addressed **positionally** (1-based). Unknown tokens raise a clear error instead of silently returning an empty prompt, and a selection that matches nothing raises too.
 
 ---
 
 ## EasyString
 
-Select specific lines from a numbered multiline text.
+Pick specific lines from a numbered multiline text and join them.
 
 **Inputs**
 
 | Input | Type | Default |
 | --- | --- | --- |
-| `input_text` | STRING (multiline) | numbered lines, e.g. `1: cat` … |
-| `line_numbers` | STRING | `1` |
+| \`input_text\` | STRING (multiline) | numbered lines, e.g. \`1: a cat\` … |
+| \`line_numbers\` | STRING | \`1\` |
+| \`add_break\` | BOOLEAN | \`false\` |
 
-**Output:** `output_text` (STRING) — the selected lines joined with spaces.
+**Output:** \`output_text\` (STRING) — the selected lines joined with spaces.
 
-*Example:* input `1: a cat\n2: a dog\n3: a bird`, `line_numbers` = `1,3` → output `a cat a bird`.
-
-> HTML markup inside the lines is stripped and line numbering is re-applied before selection, so text pasted from a browser stays clean.
+*Example:* \`1: a cat\` / \`2: a dog\` / \`3: a bird\`, selection \`1,3\` → output \`a cat a bird\`. HTML inside lines (including \`<br>\`, \`<p>\`, lists) is converted to plain text with line breaks first, so text pasted from a browser stays clean.
 
 ## EasyStringV2
 
-Like *EasyString*, but additionally splits every selected line into comma-separated elements and rewrites them using the ComfyUI weight syntax.
+Like *EasyString*, but additionally splits every selected line into comma-separated elements (commas **inside** \`()\`, \`[]\` or \`{}\` are respected) and rewrites each element with a weight.
 
 **Inputs**
 
 | Input | Type | Default |
 | --- | --- | --- |
-| `input_text` | STRING (multiline) | numbered lines |
-| `line_numbers` | STRING | `1` |
-| `weight` | FLOAT (slider 0.1–10.0) | `1.0` |
-| `apply_weight` | BOOLEAN | `true` |
+| \`input_text\` | STRING (multiline) | numbered lines |
+| \`line_numbers\` | STRING | \`1\` |
+| \`weight\` | FLOAT (slider 0.1–10.0) | \`1.0\` |
+| \`apply_weight\` | BOOLEAN | \`true\` |
+| \`add_break\` | BOOLEAN | \`false\` |
 
-**Output:** `output_text` (STRING)
+**Output:** \`output_text\` (STRING)
 
 Behavior:
 
-- If `apply_weight` is **on**, every element becomes `(text:weight)`. Elements that already carry a numeric weight — `(text:1.5)` — keep their text but get the new weight.
-- If `apply_weight` is **off**, elements are emitted as-is (only cleaned).
-- A leading `N:` line-number prefix is removed from each selected line.
+- \`apply_weight = true\` rewrites every element as \`(text:weight)\`. An element that already carries a numeric weight — \`(text:1.5)\`, \`[text:1.5]\`, \`{text:1.5}\` — keeps its text/brackets but gets the new weight.
+- \`apply_weight = false\` returns the cleaned elements as-is (no parentheses added).
+- Selection order is preserved, so \`2,1\` outputs line 2 before line 1.
+- \`add_break = true\` appends \` BREAK\`.
 
-*Example (apply_weight = true, weight = 1.2):* input `1: cat, dog\n2: bird`, `line_numbers` = `1` → output `(cat:1.2), (dog:1.2)`.
+*Example (apply_weight = true, weight = 1.2):* \`1: cat, dog\`, selection \`1\` → output \`(cat:1.2), (dog:1.2)\`.
 
 ## EasyStringSelector
 
-All the features of *EasyStringV2* plus *presets*: a second multiline field where each numbered line holds a set of line numbers, so the active selection can be switched with a single `preset_line` number.
+*EasyStringV2* plus **presets** and a **trigger gate**.
 
 **Inputs**
 
 | Input | Type | Default |
 | --- | --- | --- |
-| `input_text` | STRING (multiline) | numbered lines |
-| `line_numbers` | STRING | `1` |
-| `preset_input` | STRING (multiline) | `1: …` preset lines |
-| `use_preset` | BOOLEAN | `false` |
-| `preset_line` | INT (1–100) | `1` |
-| `weight` | FLOAT (slider) | `1.0` |
-| `apply_weight` | BOOLEAN | `true` |
-| `preset_trigger` (optional) | BOOLEAN (input) | — |
+| \`input_text\` | STRING (multiline) | numbered lines |
+| \`line_numbers\` | STRING | \`1\` |
+| \`preset_input\` | STRING (multiline) | \`1: …\` preset lines |
+| \`use_preset\` | BOOLEAN | \`false\` |
+| \`preset_line\` | INT (1–100) | \`1\` |
+| \`preset_trigger\` | BOOLEAN (input) | \`true\` |
+| \`weight\` | FLOAT (slider) | \`1.0\` |
+| \`apply_weight\` | BOOLEAN | \`true\` |
+| \`add_break\` | BOOLEAN | \`false\` |
 
-**Output:** `output_text` (STRING)
+**Output:** \`output_text\` (STRING)
 
-*Example:* preset line `2: 1,3` means “use lines 1 and 3 of `input_text`”. With `use_preset = true` and `preset_line = 2`, the node selects `input_text` lines 1 and 3.
+Presets work the same way as the *line selection* syntax: each numbered line of \`preset_input\` holds a selection spec, and \`preset_line\` picks which one is active. Example preset file:
+
+\`\`\`
+1: 1
+2: 1,3
+\`\`\`
+
+With \`use_preset = true\` and \`preset_line = 2\`, the node selects \`input_text\` lines 1 and 3.
+
+\`preset_trigger\` acts as an **enable gate**: when it is \`false\`, the node raises a clear error instead of producing output, which is useful to intentionally pause a branch of a workflow. Wire it from a widget or from another node; \`forceInput\` lets you connect it.
 
 ## EasyStringSelectorNeg
 
-Selects lines like the other nodes but splits each selected line at the separator `---` into a **positive** and a **negative** part, outputting both prompts separately.
+Selects lines like the other nodes but splits each selected line on \`---\` into a **positive** and a **negative** part, outputting both prompts separately.
 
 **Inputs**
 
 | Input | Type | Default |
 | --- | --- | --- |
-| `input_text` | STRING (multiline) | `1: … --- …` |
-| `line_numbers` | STRING | `1` |
-| `preset_input` | STRING (multiline) | preset lines |
-| `use_preset` | BOOLEAN | `false` |
-| `preset_line` | INT (1–100) | `1` |
-| `weight` | FLOAT (slider) | `1.0` |
-| `apply_weight` | BOOLEAN | `true` |
-| `add_break` | BOOLEAN | `false` |
-| `preset_trigger` (optional) | BOOLEAN (input) | — |
+| \`input_text\` | STRING (multiline) | \`1: … --- …\` |
+| \`line_numbers\` | STRING | \`1\` |
+| \`preset_input\` | STRING (multiline) | preset lines |
+| \`use_preset\` | BOOLEAN | \`false\` |
+| \`preset_line\` | INT (1–100) | \`1\` |
+| \`preset_trigger\` | BOOLEAN (input) | \`true\` |
+| \`weight\` | FLOAT (slider) | \`1.0\` |
+| \`apply_weight\` | BOOLEAN | \`true\` |
+| \`add_break\` | BOOLEAN | \`false\` |
 
-**Outputs:** `positive_prompt` (STRING), `negative_prompt` (STRING)
+**Outputs:** \`positive_prompt\` (STRING), \`negative_prompt\` (STRING)
 
-Behavior:
+Each selected line may contain \`positive --- negative\`. The part before the first \`---\` goes to the positive output, the part after it to the negative output; lines without \`---\` produce a positive element only. Weighting works exactly as in *EasyStringV2* for both outputs.
 
-- Each selected line may contain `pos text --- neg text`; the part before the first `---` goes to the positive output, the part after it to the negative output. Lines without `---` produce a positive element only.
-- Weighting works exactly as in *EasyStringV2* for both outputs.
-- `add_break = true` appends ` BREAK` to the positive output (ignored when positive is empty).
-
-*Example (apply_weight = true, weight = 1.0):* input `1: cat --- dog\n2: bird --- fish`, `line_numbers` = `1,2` → positive `(cat:1), (bird:1)`, negative `(dog:1), (fish:1)`.
+*Example (apply_weight = true, weight = 1.0):* \`1: cat --- dog\` / \`2: bird\`, selection \`1,2\` → positive \`(cat:1), (bird:1)\`, negative \`(dog:1)\`.
 
 ## ConcatenatePromptsNode
 
-Joins any number of prompt strings into one space-separated string.
+Joins the **connected** prompt inputs into one space-separated string. Inputs are optional: only the ones you wire contribute to the output, and they are joined in numerical order (\`prompt_2\` before \`prompt_10\`).
 
-**Inputs:** `prompt_1` … `prompt_15` (STRING). All inputs are always shown; blank ones simply contribute nothing.
+**Inputs (optional):** \`prompt_1\` … \`prompt_20\` (STRING, multiline). Blank/unconnected inputs are skipped.
 
-**Output:** `concatenated_prompt` (STRING)
+**Output:** \`concatenated_prompt\` (STRING)
 
-**Changing the input count:** edit `NUM_INPUTS` at the top of `Concatenate_prompts.py` and restart ComfyUI:
+To change how many are available, edit \`MAX_INPUTS\` at the top of \`Concatenate_prompts.py\` and restart ComfyUI.
 
-```python
-class ConcatenatePromptsNode:
-    NUM_INPUTS = 15  # change this value
-```
+## Testing
+
+\`\`\`bash
+cd ComfyUI-EasyStringNodes
+python3 tests/test_nodes.py
+\`\`\`
 
 ## Workflow examples
 
-Ready-to-load API-format examples live in [examples/workflows](examples/workflows):
+API-format examples live in [examples/workflows](examples/workflows):
 
-- `easy_string_select_lines.json` — *EasyString*, pick lines 1 and 3
-- `easy_string_v2_weighted.json` — *EasyStringV2*, weight elements of one line
-- `selector_neg_positive_negative.json` — *EasyStringSelectorNeg*, split positive/negative with weights
+- \`easy_string_select_lines.json\` — *EasyString*, pick lines 1 and 3
+- \`easy_string_v2_weighted.json\` — *EasyStringV2*, weight elements of one line
+- \`easy_string_selector_preset.json\` — *EasyStringSelector*, preset-driven selection
+- \`selector_neg_positive_negative.json\` — *EasyStringSelectorNeg*, positive/negative split
 
-Load them via the ComfyUI **API-format** workflow loader, or POST the JSON to the `/prompt` endpoint.
+Load them with the ComfyUI **API-format** workflow loader, or POST the JSON to the \`/prompt\` endpoint.
 
 ## License
 
@@ -151,4 +178,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Author
 
-[Your GitHub nickname](https://github.com/Ghost-in-the-dark)
+[Ghost-in-the-dark](https://github.com/Ghost-in-the-dark)

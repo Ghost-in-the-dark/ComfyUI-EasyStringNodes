@@ -4,11 +4,12 @@
       "input_text": "1: cat, dog\n2: bird, fish",
       "line_numbers": "1",
       "weight": 1.2,
-      "apply_weight": true
+      "apply_weight": true,
+      "add_break": false
     },
     "class_type": "EasyStringV2",
     "_meta": {
-      "title": "EasyStringV2 — re-weight one line"
+      "title": "Easy String V2 - re-weight one line"
     }
   }
 }

@@ -1,9 +1,47 @@
-import re
-from html.parser import HTMLParser
+"""Advanced string nodes: per-element weighting, presets and
+positive/negative splitting.
+
+All heavy lifting is delegated to utils.py so the three node classes only
+declare their inputs and orchestrate the shared helpers.
+"""
+
+try:
+    from .utils import (
+        format_weight, join_elements, parse_content_lines, process_elements,
+        resolve_lines, split_top_level,
+    )
+except ImportError:  # plain script / test context
+    from utils import (
+        format_weight, join_elements, parse_content_lines, process_elements,
+        resolve_lines, split_top_level,
+    )
+DEFAULT_INPUT = "1: cat, dog\n2: bird, fish"
+DEFAULT_SELECT = "1"
+DEFAULT_PRESETS = "1: 1\n2: 1,2"
+
+
+def _selected_lines(input_text, line_numbers):
+    """Selected raw lines (with the 'N: ' prefix already stripped)."""
+    return resolve_lines(input_text, line_numbers)
+
+
+def _resolve_preset(preset_input, preset_line, node_label):
+    """Return the content of the requested preset line (by number, then by
+    1-based position). Raises a clear error when nothing matches."""
+    presets = parse_content_lines(preset_input)
+    for p in presets:
+        if p["num"] == preset_line:
+            return p["content"]
+    if 1 <= preset_line <= len(presets):
+        return presets[preset_line - 1]["content"]
+    raise ValueError(
+        f"{node_label}: preset line {preset_line} not found "
+        f"({len(presets)} preset(s) available)"
+    )
+
 
 class EasyStringV2:
-    def __init__(self):
-        pass
+    """Pick lines, split them into elements and rewrite each as (text:weight)."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -11,116 +49,55 @@ class EasyStringV2:
             "required": {
                 "input_text": ("STRING", {
                     "multiline": True,
-                    "default": "1: Первая строка\n2: Вторая строка"
+                    "default": DEFAULT_INPUT,
                 }),
-                "line_numbers": ("STRING", {"default": "1"}),
+                "line_numbers": ("STRING", {
+                    "default": DEFAULT_SELECT,
+                }),
                 "weight": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.1,
                     "max": 10.0,
                     "step": 0.1,
-                    "display": "slider"
+                    "display": "slider",
                 }),
-                "apply_weight": ("BOOLEAN", {"default": True}),
+                "apply_weight": ("BOOLEAN", {
+                    "default": True,
+                    "label_on": "apply (tag:weight)",
+                    "label_off": "plain text",
+                }),
+                "add_break": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "add BREAK",
+                    "label_off": "no BREAK",
+                }),
             },
         }
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("output_text",)
     FUNCTION = "process"
-    CATEGORY = "text processing"
+    CATEGORY = "Text Processing"
+    DESCRIPTION = "Pick lines, split into elements and apply (text:weight)."
 
-    def strip_html(self, text):
-        class MLStripper(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.strict = False
-                self.convert_charrefs = True
-                self.text = []
-            def handle_data(self, d):
-                self.text.append(d)
-            def get_data(self):
-                return ''.join(self.text)
-
-        stripper = MLStripper()
-        stripper.feed(text)
-        return stripper.get_data()
-
-    def format_weight(self, weight):
-        """Форматирует вес, избегая проблем с плавающей точкой"""
-        rounded = round(weight, 2)
-        if rounded.is_integer():
-            return str(int(rounded))
-        return f"{rounded:.2f}".rstrip('0').rstrip('.')
-
-    def process(self, input_text, line_numbers, weight=1.0, apply_weight=True):
-        # Разбиваем входной текст на строки
-        lines = input_text.split('\n')
-        selected_numbers = [int(n)-1 for n in re.findall(r'\d+', line_numbers)]
+    def process(self, input_text, line_numbers, weight=1.0,
+                apply_weight=True, add_break=False):
+        formatted_weight = format_weight(weight) if apply_weight else None
         all_elements = []
+        for line in _selected_lines(input_text, line_numbers):
+            all_elements.extend(
+                process_elements(split_top_level(line), apply_weight,
+                                 formatted_weight)
+            )
 
-        # Форматируем вес один раз для всех элементов
-        formatted_weight = self.format_weight(weight) if apply_weight else None
+        output = join_elements(all_elements)
+        if add_break and output:
+            output = output + " BREAK"
+        return (output,)
 
-        for idx in selected_numbers:
-            if idx < len(lines):
-                # Очищаем строку от HTML и лишних пробелов
-                clean_line = self.strip_html(lines[idx].strip())
-                
-                # Удаляем префикс с номером строки (например, "1: ")
-                clean_line = re.sub(r'^\d+:\s*', '', clean_line)
-                
-                # Разбиваем на элементы по запятым
-                elements = [elem.strip() for elem in clean_line.split(',')]
-                elements = [elem for elem in elements if elem]  # Убираем пустые элементы
-
-                for elem in elements:
-                    # Если переключатель выключен, оставляем элемент как есть
-                    if not apply_weight:
-                        all_elements.append(elem)
-                        continue
-                    
-                    # Обработка элементов с существующим весом
-                    if elem.startswith('(') and elem.endswith(')'):
-                        content = elem[1:-1].strip()
-                        if ':' in content:
-                            parts = content.rsplit(':', 1)
-                            text_part = parts[0].strip()
-                            weight_str = parts[1].strip()
-                            
-                            # Проверяем, является ли weight_str числом
-                            try:
-                                float(weight_str)
-                                # Заменяем вес
-                                new_elem = f"({text_part}:{formatted_weight})"
-                            except:
-                                # Если не число, добавляем новый вес
-                                new_elem = f"({content}:{formatted_weight})"
-                        else:
-                            # Скобки есть, но нет разделителя веса
-                            new_elem = f"({content}:{formatted_weight})"
-                    else:
-                        # Элемент без скобок
-                        new_elem = f"({elem}:{formatted_weight})"
-                    
-                    all_elements.append(new_elem)
-
-        # Форматируем вывод: каждый элемент с запятой после него
-        formatted_elements = [f"{elem}," for elem in all_elements]
-        output_text = ' '.join(formatted_elements)
-        
-        # Убираем последнюю запятую, если она есть
-        if output_text.endswith(','):
-            output_text = output_text.rstrip(',')
-            
-        # Убираем лишние пробелы
-        output_text = re.sub(r'\s+', ' ', output_text).strip()
-        
-        return (output_text,)
 
 class EasyStringSelector:
-    def __init__(self):
-        pass
+    """Like EasyStringV2, with preset-based line selection."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -128,142 +105,95 @@ class EasyStringSelector:
             "required": {
                 "input_text": ("STRING", {
                     "multiline": True,
-                    "default": "1: Первая строка\n2: Вторая строка"
+                    "default": DEFAULT_INPUT,
                 }),
-                "line_numbers": ("STRING", {"default": "1"}),
+                "line_numbers": ("STRING", {
+                    "default": DEFAULT_SELECT,
+                }),
                 "preset_input": ("STRING", {
                     "multiline": True,
-                    "default": "1: Набор 1\n2: Набор 2",
-                    "height": 100  # Уменьшенная высота для пресетов
+                    "default": DEFAULT_PRESETS,
                 }),
-                "use_preset": ("BOOLEAN", {"default": False}),
+                "use_preset": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "use preset",
+                    "label_off": "use line_numbers",
+                }),
                 "preset_line": ("INT", {
                     "default": 1,
                     "min": 1,
                     "max": 100,
-                    "step": 1
+                    "step": 1,
+                }),
+                "preset_trigger": ("BOOLEAN", {
+                    "default": True,
+                    "forceInput": True,
+                    "label_on": "trigger",
+                    "label_off": "blocked",
                 }),
                 "weight": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.1,
                     "max": 10.0,
                     "step": 0.1,
-                    "display": "slider"
+                    "display": "slider",
                 }),
-                "apply_weight": ("BOOLEAN", {"default": True}),
-            },
-            "optional": {
-                "preset_trigger": ("BOOLEAN", {"forceInput": True}),  # Опциональный триггер
+                "apply_weight": ("BOOLEAN", {
+                    "default": True,
+                    "label_on": "apply (tag:weight)",
+                    "label_off": "plain text",
+                }),
+                "add_break": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "add BREAK",
+                    "label_off": "no BREAK",
+                }),
             },
         }
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("output_text",)
     FUNCTION = "process"
-    CATEGORY = "text processing"
+    CATEGORY = "Text Processing"
+    DESCRIPTION = "EasyStringV2 with preset-driven line selection."
 
-    def strip_html(self, text):
-        class MLStripper(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.strict = False
-                self.convert_charrefs = True
-                self.text = []
-            def handle_data(self, d):
-                self.text.append(d)
-            def get_data(self):
-                return ''.join(self.text)
-
-        stripper = MLStripper()
-        stripper.feed(text)
-        return stripper.get_data()
-
-    def format_weight(self, weight):
-        """Форматирует вес, избегая проблем с плавающей точкой"""
-        rounded = round(weight, 2)
-        if rounded.is_integer():
-            return str(int(rounded))
-        return f"{rounded:.2f}".rstrip('0').rstrip('.')
-
-    def process(self, input_text, line_numbers, preset_input, use_preset, preset_line, weight=1.0, apply_weight=True, preset_trigger=None):
-        # Если используется пресет, заменяем line_numbers на выбранную строку из preset_input
+    def _effective_spec(self, input_text, line_numbers, preset_input,
+                        use_preset, preset_line):
+        """(spec, source): preset content, or line_numbers when presets are
+        disabled."""
         if use_preset:
-            preset_lines = preset_input.split('\n')
-            if 1 <= preset_line <= len(preset_lines):
-                # Извлекаем текст выбранной строки пресета
-                selected_preset = preset_lines[preset_line - 1].strip()
-                
-                # Удаляем префикс номера строки
-                selected_preset = re.sub(r'^\d+:\s*', '', selected_preset)
-                line_numbers = selected_preset
-        
-        # Разбиваем входной текст на строки
-        lines = input_text.split('\n')
-        selected_numbers = [int(n)-1 for n in re.findall(r'\d+', line_numbers)]
+            return _resolve_preset(preset_input, preset_line,
+                                   "EasyStringSelector"), "preset"
+        return line_numbers, "line_numbers"
+
+    def process(self, input_text, line_numbers, preset_input, use_preset,
+                preset_line, preset_trigger=True, weight=1.0,
+                apply_weight=True, add_break=False):
+        if not preset_trigger:
+            raise ValueError(
+                "EasyStringSelector: preset_trigger is off. Connect a true "
+                "input (or set the widget) to let this node run."
+            )
+        spec, _ = self._effective_spec(
+            input_text, line_numbers, preset_input, use_preset, preset_line
+        )
+
+        formatted_weight = format_weight(weight) if apply_weight else None
         all_elements = []
+        for line in _selected_lines(input_text, spec):
+            all_elements.extend(
+                process_elements(split_top_level(line), apply_weight,
+                                 formatted_weight)
+            )
 
-        # Форматируем вес один раз для всех элементов
-        formatted_weight = self.format_weight(weight) if apply_weight else None
+        output = join_elements(all_elements)
+        if add_break and output:
+            output = output + " BREAK"
+        return (output,)
 
-        for idx in selected_numbers:
-            if idx < len(lines):
-                # Очищаем строку от HTML и лишних пробелов
-                clean_line = self.strip_html(lines[idx].strip())
-                
-                # Удаляем префикс с номером строки (например, "1: ")
-                clean_line = re.sub(r'^\d+:\s*', '', clean_line)
-                
-                # Разбиваем на элементы по запятым
-                elements = [elem.strip() for elem in clean_line.split(',')]
-                elements = [elem for elem in elements if elem]  # Убираем пустые элементы
-
-                for elem in elements:
-                    # Если переключатель выключен, оставляем элемент как есть
-                    if not apply_weight:
-                        all_elements.append(elem)
-                        continue
-                    
-                    # Обработка элементов с существующим весом
-                    if elem.startswith('(') and elem.endswith(')'):
-                        content = elem[1:-1].strip()
-                        if ':' in content:
-                            parts = content.rsplit(':', 1)
-                            text_part = parts[0].strip()
-                            weight_str = parts[1].strip()
-                            
-                            # Проверяем, является ли weight_str числом
-                            try:
-                                float(weight_str)
-                                # Заменяем вес
-                                new_elem = f"({text_part}:{formatted_weight})"
-                            except:
-                                # Если не число, добавляем новый вес
-                                new_elem = f"({content}:{formatted_weight})"
-                        else:
-                            # Скобки есть, но нет разделителя веса
-                            new_elem = f"({content}:{formatted_weight})"
-                    else:
-                        # Элемент без скобок
-                        new_elem = f"({elem}:{formatted_weight})"
-                    
-                    all_elements.append(new_elem)
-
-        # Форматируем вывод: каждый элемент с запятой после него
-        formatted_elements = [f"{elem}," for elem in all_elements]
-        output_text = ' '.join(formatted_elements)
-        
-        # Убираем последнюю запятую, если она есть
-        if output_text.endswith(','):
-            output_text = output_text.rstrip(',')
-            
-        # Убираем лишние пробелы
-        output_text = re.sub(r'\s+', ' ', output_text).strip()
-        
-        return (output_text,)
 
 class EasyStringSelectorNeg:
-    def __init__(self):
-        pass
+    """Split selected lines on '---' into positive and negative prompts."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -271,152 +201,105 @@ class EasyStringSelectorNeg:
             "required": {
                 "input_text": ("STRING", {
                     "multiline": True,
-                    "default": "1: Первая строка --- негатив\n2: Вторая строка"
+                    "default": "1: cat --- dog\n2: bird --- fish",
                 }),
-                "line_numbers": ("STRING", {"default": "1"}),
+                "line_numbers": ("STRING", {
+                    "default": DEFAULT_SELECT,
+                }),
                 "preset_input": ("STRING", {
                     "multiline": True,
-                    "default": "1: Набор 1\n2: Набор 2",
-                    "height": 100
+                    "default": DEFAULT_PRESETS,
                 }),
-                "use_preset": ("BOOLEAN", {"default": False}),
+                "use_preset": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "use preset",
+                    "label_off": "use line_numbers",
+                }),
                 "preset_line": ("INT", {
                     "default": 1,
                     "min": 1,
                     "max": 100,
-                    "step": 1
+                    "step": 1,
+                }),
+                "preset_trigger": ("BOOLEAN", {
+                    "default": True,
+                    "forceInput": True,
+                    "label_on": "trigger",
+                    "label_off": "blocked",
                 }),
                 "weight": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.1,
                     "max": 10.0,
                     "step": 0.1,
-                    "display": "slider"
+                    "display": "slider",
                 }),
-                "apply_weight": ("BOOLEAN", {"default": True}),
-                "add_break": ("BOOLEAN", {"default": False}),
-            },
-            "optional": {
-                "preset_trigger": ("BOOLEAN", {"forceInput": True}),
+                "apply_weight": ("BOOLEAN", {
+                    "default": True,
+                    "label_on": "apply (tag:weight)",
+                    "label_off": "plain text",
+                }),
+                "add_break": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "add BREAK",
+                    "label_off": "no BREAK",
+                }),
             },
         }
 
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("positive_prompt", "negative_prompt")
     FUNCTION = "process"
-    CATEGORY = "text processing"
+    CATEGORY = "Text Processing"
+    DESCRIPTION = "Split selected lines on '---' into positive/negative prompts."
 
-    def strip_html(self, text):
-        class MLStripper(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.strict = False
-                self.convert_charrefs = True
-                self.text = []
-            def handle_data(self, d):
-                self.text.append(d)
-            def get_data(self):
-                return ''.join(self.text)
+    def process(self, input_text, line_numbers, preset_input, use_preset,
+                preset_line, preset_trigger=True, weight=1.0,
+                apply_weight=True, add_break=False):
+        if not preset_trigger:
+            raise ValueError(
+                "EasyStringSelectorNeg: preset_trigger is off. Connect a true "
+                "input (or set the widget) to let this node run."
+            )
 
-        stripper = MLStripper()
-        stripper.feed(text)
-        return stripper.get_data()
-
-    def format_weight(self, weight):
-        rounded = round(weight, 2)
-        if rounded.is_integer():
-            return str(int(rounded))
-        return f"{rounded:.2f}".rstrip('0').rstrip('.')
-
-    def process_elements(self, elements, apply_weight, formatted_weight):
-        processed = []
-        for elem in elements:
-            if not apply_weight:
-                processed.append(elem)
-                continue
-            
-            if elem.startswith('(') and elem.endswith(')'):
-                content = elem[1:-1].strip()
-                if ':' in content:
-                    parts = content.rsplit(':', 1)
-                    text_part = parts[0].strip()
-                    weight_str = parts[1].strip()
-                    try:
-                        float(weight_str)
-                        new_elem = f"({text_part}:{formatted_weight})"
-                    except:
-                        new_elem = f"({content}:{formatted_weight})"
-                else:
-                    new_elem = f"({content}:{formatted_weight})"
-            else:
-                new_elem = f"({elem}:{formatted_weight})"
-            processed.append(new_elem)
-        return processed
-
-    def format_output(self, elements):
-        formatted = [f"{elem}," for elem in elements]
-        output = ' '.join(formatted)
-        if output.endswith(','):
-            output = output.rstrip(',')
-        return re.sub(r'\s+', ' ', output).strip()
-
-    def process(self, input_text, line_numbers, preset_input, use_preset, preset_line, weight=1.0, apply_weight=True, preset_trigger=None, add_break=False):
+        spec = line_numbers
         if use_preset:
-            preset_lines = preset_input.split('\n')
-            if 1 <= preset_line <= len(preset_lines):
-                selected_preset = preset_lines[preset_line - 1].strip()
-                selected_preset = re.sub(r'^\d+:\s*', '', selected_preset)
-                line_numbers = selected_preset
-        
-        lines = input_text.split('\n')
-        selected_numbers = [int(n)-1 for n in re.findall(r'\d+', line_numbers)]
-        all_positive = []
-        all_negative = []
-        
-        formatted_weight = self.format_weight(weight) if apply_weight else None
+            spec = _resolve_preset(preset_input, preset_line,
+                                   "EasyStringSelectorNeg")
 
-        for idx in selected_numbers:
-            if idx < len(lines):
-                line = lines[idx].strip()
-                
-                # Разделение на основной и негативный промпты
-                if '---' in line:
-                    pos_line, neg_line = line.split('---', 1)
-                else:
-                    pos_line = line
-                    neg_line = ""
+        formatted_weight = format_weight(weight) if apply_weight else None
+        positives, negatives = [], []
 
-                # Обработка основного промпта
-                pos_clean = self.strip_html(pos_line.strip())
-                pos_clean = re.sub(r'^\d+:\s*', '', pos_clean)
-                pos_elements = [elem.strip() for elem in pos_clean.split(',') if elem.strip()]
-                all_positive.extend(self.process_elements(pos_elements, apply_weight, formatted_weight))
-                
-                # Обработка негативного промпта
-                if neg_line:
-                    neg_clean = self.strip_html(neg_line.strip())
-                    neg_clean = re.sub(r'^\d+:\s*', '', neg_clean)
-                    neg_elements = [elem.strip() for elem in neg_clean.split(',') if elem.strip()]
-                    all_negative.extend(self.process_elements(neg_elements, apply_weight, formatted_weight))
+        for line in _selected_lines(input_text, spec):
+            if "---" in line:
+                pos_line, neg_line = line.split("---", 1)
+            else:
+                pos_line, neg_line = line, ""
+            positives.extend(
+                process_elements(split_top_level(pos_line), apply_weight,
+                                 formatted_weight)
+            )
+            if neg_line.strip():
+                negatives.extend(
+                    process_elements(split_top_level(neg_line), apply_weight,
+                                     formatted_weight)
+                )
 
-        # Форматирование вывода
-        positive_output = self.format_output(all_positive)
-        negative_output = self.format_output(all_negative) if all_negative else ""
-        
-        # Добавляем BREAK в конец позитивного промпта при необходимости
+        positive_output = join_elements(positives)
+        negative_output = join_elements(negatives)
         if add_break and positive_output:
-            positive_output += " BREAK"
-
+            positive_output = positive_output + " BREAK"
         return (positive_output, negative_output)
-        
+
+
 NODE_CLASS_MAPPINGS = {
     "EasyStringV2": EasyStringV2,
     "EasyStringSelector": EasyStringSelector,
-    "EasyStringSelectorNeg": EasyStringSelectorNeg
+    "EasyStringSelectorNeg": EasyStringSelectorNeg,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "EasyStringV2": "Easy String V2",
     "EasyStringSelector": "Easy String Selector",
-    "EasyStringSelectorNeg": "Easy String Selector Neg"
+    "EasyStringSelectorNeg": "Easy String Selector Neg",
 }

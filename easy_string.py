@@ -1,9 +1,17 @@
-import re
-from html.parser import HTMLParser  # Правильный импорт для Python 3
+try:
+    from .utils import (  # package context (ComfyUI loads the folder as a package)
+        html_to_text, parse_content_lines, parse_spec, select_content
+    )
+except ImportError:  # plain script / test context
+    from utils import html_to_text, parse_content_lines, parse_spec, select_content
+
+
+DEFAULT_INPUT = "1: a cat\n2: a dog\n3: a bird"
+DEFAULT_SELECT = "1"
+
 
 class EasyString:
-    def __init__(self):
-        pass
+    """Pick lines from a numbered multiline text and join them."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -11,48 +19,45 @@ class EasyString:
             "required": {
                 "input_text": ("STRING", {
                     "multiline": True,
-                    "default": "1: Первая строка\n2: Вторая строка"  # Упрощенная нумерация
+                    "default": DEFAULT_INPUT,
                 }),
-                "line_numbers": ("STRING", {"default": "1"}),
+                "line_numbers": ("STRING", {
+                    "default": DEFAULT_SELECT,
+                }),
+                "add_break": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "add BREAK",
+                    "label_off": "no BREAK",
+                }),
             },
         }
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("output_text",)
     FUNCTION = "process"
-    CATEGORY = "text processing"
+    CATEGORY = "Text Processing"
+    DESCRIPTION = "Pick lines from a numbered multiline text and join them."
 
-    def strip_html(self, text):
-        class MLStripper(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.strict = False
-                self.convert_charrefs = True
-                self.text = []
-            def handle_data(self, d):
-                self.text.append(d)
-            def get_data(self):
-                return ''.join(self.text)
+    def process(self, input_text, line_numbers, add_break=False):
+        items = parse_content_lines(input_text)
+        numbers = parse_spec(line_numbers)
 
-        stripper = MLStripper()
-        stripper.feed(text)
-        return stripper.get_data()
+        selected = []
+        for n in numbers:
+            content = select_content(n, items)
+            if content is not None:
+                selected.append(content)
 
-    def process(self, input_text, line_numbers):
-        # Автоматическая нумерация строк
-        lines = []
-        for i, line in enumerate(input_text.split('\n'), 1):
-            lines.append(f"{i}: {line.split(': ')[-1]}")  # Обновляем нумерацию
-            
-        # Удаление старой HTML-разметки (если есть)
-        clean_text = self.strip_html('\n'.join(lines))
-        
-        # Обработка выбранных строк
-        selected_numbers = [int(n)-1 for n in re.findall(r'\d+', line_numbers)]
-        valid_lines = [line.split(': ', 1)[1] for idx, line in enumerate(clean_text.split('\n')) 
-                      if idx in selected_numbers and idx < len(lines)]
-        
-        return (' '.join(valid_lines),)
+        if not selected:
+            raise ValueError(
+                f"EasyString: no line matches the selection '{line_numbers}'"
+            )
+
+        output = html_to_text(" ".join(selected))
+        if add_break and output:
+            output = output + " BREAK"
+        return (output,)
+
 
 NODE_CLASS_MAPPINGS = {"EasyString": EasyString}
-NODE_DISPLAY_NAME_MAPPINGS = {"EasyString": "easy_string"}
+NODE_DISPLAY_NAME_MAPPINGS = {"EasyString": "Easy String"}

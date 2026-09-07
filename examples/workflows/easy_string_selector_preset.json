@@ -1,0 +1,19 @@
+{
+  "1": {
+    "inputs": {
+      "input_text": "1: a cat\n2: a dog\n3: a bird\n4: a fish",
+      "line_numbers": "1",
+      "preset_input": "1: 1\n2: 1,3",
+      "use_preset": true,
+      "preset_line": 2,
+      "preset_trigger": true,
+      "weight": 1,
+      "apply_weight": true,
+      "add_break": false
+    },
+    "class_type": "EasyStringSelector",
+    "_meta": {
+      "title": "Easy String Selector - preset 2 = lines 1,3"
+    }
+  }
+}
