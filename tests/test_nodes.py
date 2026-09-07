@@ -9,6 +9,7 @@ These tests pin the fixed edge-case behavior: original line numbers,
 html <br> handling, ranges/duplicates, preset triggers, element weighting.
 """
 
+import json
 import os
 import sys
 import traceback
@@ -304,6 +305,179 @@ def test_neg_editor_empty_selection_spec_raises():
     node = EasyStringNegEditor()
     with raises(ValueError):
         node.process(ROWS_JSON, line_numbers="", select_all=False)
+
+
+# ---------------- presets & numbering (EasyStringNegEditor)
+
+
+def _num_rows(*nums):
+    import json
+    rows = []
+    for i, n in enumerate(nums, 1):
+        rows.append({'num': n, 'pos': 'row' + str(n), 'neg': 'n' + str(n), 'img': ''})
+    return json.dumps(rows)
+
+
+def test_neg_editor_preset_by_num_selects_rows():
+    node = EasyStringNegEditor()
+    # preset 7: rows with num 108, 193, 135
+    rows = _num_rows(108, 193, 135, 57)
+    presets = '7: 108 193 135'
+    pos, neg = node.process(rows, presets=presets, use_preset=True,
+                            preset_line=7, apply_weight=False)
+    assert pos == 'row108, row193, row135'
+    assert neg == 'n108, n193, n135'
+
+
+def test_neg_editor_preset_fallback_to_position():
+    node = EasyStringNegEditor()
+    # rows without num: preset '1 3' -> positional rows 1 and 3
+    rows = '[{"pos": "a", "neg": "", "img": ""},{"pos": "b", "neg": "", "img": ""},{"pos": "c", "neg": "", "img": ""}]'
+    presets = '1: 1 3'
+    pos, _ = node.process(rows, presets=presets, use_preset=True, preset_line=1,
+                          apply_weight=False)
+    assert pos == 'a, c'
+
+
+def test_neg_editor_preset_mixed_num_and_position():
+    # num=1 matches row with num 1; 3 has no num -> positional row 3
+    node = EasyStringNegEditor()
+    rows = '[{"num": 1, "pos": "one", "neg": "", "img": ""},{"pos": "two", "neg": "", "img": ""},{"pos": "three", "neg": "", "img": ""}]'
+    presets = '5: 1 3'
+    pos, _ = node.process(rows, presets=presets, use_preset=True, preset_line=5,
+                          apply_weight=False)
+    assert pos == 'one, three'
+
+
+def test_neg_editor_preset_missing_raises():
+    node = EasyStringNegEditor()
+    with raises(ValueError):
+        node.process(_num_rows(1, 2), presets='9: 1', use_preset=True,
+                     preset_line=8, apply_weight=False)
+
+
+def test_neg_editor_line_numbers_use_num():
+    node = EasyStringNegEditor()
+    rows = '[{"num": 108, "pos": "artist108", "neg": "", "img": ""},{"num": 193, "pos": "artist193", "neg": "", "img": ""}]'
+    pos, _ = node.process(rows, line_numbers='193', select_all=False,
+                          apply_weight=False)
+    assert pos == 'artist193'
+
+
+def test_neg_editor_parse_old_lines_helper():
+    import json as _json
+    # The JS import parser turns old numbered lines into rows; the python
+    # side just sees rows carrying num with the text in neg. Pin that:
+    rows = _json.loads('[{"num": 1, "pos": "", "neg": ";soranamae:0.7, ;james m hardiman", "img": ""},{"num": 2, "pos": "", "neg": ";fuchs", "img": ""}]')
+    node = EasyStringNegEditor()
+    pos, neg = node.process(_json.dumps(rows), apply_weight=False)
+    assert neg == ';soranamae:0.7, ;james m hardiman, ;fuchs'
+
+
+def test_neg_editor_preset_with_commas_and_ranges():
+    node = EasyStringNegEditor()
+    rows = _num_rows(1, 2, 3, 4, 5)
+    presets = '3: 1,3 4-5'
+    pos, _ = node.process(rows, presets=presets, use_preset=True, preset_line=3,
+                          apply_weight=False)
+    assert pos == 'row1, row3, row4, row5'
+
+
+def test_neg_editor_preset_duplicates_kept():
+    node = EasyStringNegEditor()
+    rows = _num_rows(1, 2)
+    presets = '2: 1 1 2'
+    pos, _ = node.process(rows, presets=presets, use_preset=True, preset_line=2,
+                          apply_weight=False)
+    assert pos == 'row1, row1, row2'
+
+
+def test_neg_editor_use_preset_overrides_select_all():
+    node = EasyStringNegEditor()
+    rows = _num_rows(1, 2, 3)
+    presets = '1: 2'
+    pos, _ = node.process(rows, presets=presets, use_preset=True, preset_line=1,
+                          select_all=True, apply_weight=False)
+    assert pos == 'row2'
+
+
+def test_neg_editor_empty_preset_raises():
+    node = EasyStringNegEditor()
+    with raises(ValueError):
+        node.process(_num_rows(1), presets='1: 2', use_preset=True,
+                     preset_line=1, apply_weight=False)
+
+
+
+
+# ---------------- categories & checkbox mode (EasyStringNegEditor)
+
+
+def test_neg_editor_select_checked_uses_only_ticked():
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'num': 1, 'cat': 'a', 'on': True, 'pos': 'one', 'neg': '', 'img': ''},
+        {'num': 2, 'cat': 'a', 'on': False, 'pos': 'two', 'neg': '', 'img': ''},
+        {'num': 3, 'cat': 'b', 'on': True, 'pos': 'three', 'neg': '', 'img': ''},
+    ])
+    pos, _ = node.process(rows, select_checked=True, apply_weight=False)
+    assert pos == 'one, three'
+
+
+def test_neg_editor_select_checked_overrides_preset_and_all():
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'on': True, 'pos': 'a', 'neg': '', 'img': ''},
+        {'on': False, 'pos': 'b', 'neg': '', 'img': ''},
+    ])
+    # overrides select_all
+    pos, _ = node.process(rows, select_all=True, select_checked=True,
+                          apply_weight=False)
+    assert pos == 'a'
+    # overrides preset
+    pos, _ = node.process(rows, presets='1: 2', use_preset=True, preset_line=1,
+                          select_checked=True, apply_weight=False)
+    assert pos == 'a'
+
+
+def test_neg_editor_select_checked_none_ticked_raises():
+    node = EasyStringNegEditor()
+    rows = json.dumps([{'on': False, 'pos': 'x', 'neg': '', 'img': ''}])
+    with raises(ValueError):
+        node.process(rows, select_checked=True, apply_weight=False)
+
+
+def test_neg_editor_rows_without_on_default_to_ticked():
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'pos': 'a', 'neg': '', 'img': ''},
+        {'pos': 'b', 'neg': '', 'img': ''},
+    ])
+    pos, _ = node.process(rows, select_checked=True, apply_weight=False)
+    assert pos == 'a, b'
+
+
+def test_neg_editor_cat_parsed_and_not_emitted():
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'cat': 'artists', 'on': True, 'pos': 'a', 'neg': '', 'img': ''},
+    ])
+    parsed = node._parse_rows(rows)
+    assert parsed[0]['cat'] == 'artists'
+    assert parsed[0]['on'] is True
+    pos, _ = node.process(rows, select_all=True, apply_weight=False)
+    assert pos == 'a'
+
+
+def test_neg_editor_on_string_false_coerced():
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'on': 'false', 'pos': 'a', 'neg': '', 'img': ''},
+        {'on': '0', 'pos': 'b', 'neg': '', 'img': ''},
+    ])
+    parsed = node._parse_rows(rows)
+    assert parsed[0]['on'] is False
+    assert parsed[1]['on'] is False
 
 
 # ---------------------------------------------------------------- runner

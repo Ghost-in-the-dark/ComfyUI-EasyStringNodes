@@ -1,9 +1,13 @@
 {
   "1": {
     "inputs": {
-      "rows": "[{\"pos\": \"a cute cat\", \"neg\": \"dog, blurry\", \"img\": \"\"},{\"pos\": \"a bird in flight\", \"neg\": \"watermark\", \"img\": \"\"}]",
+      "rows": "[{\"num\": 1, \"cat\": \"animals\", \"on\": true, \"pos\": \"a cute cat\", \"neg\": \"dog, blurry\", \"img\": \"\"}, {\"num\": 2, \"cat\": \"animals\", \"on\": false, \"pos\": \"a bird in flight\", \"neg\": \"watermark\", \"img\": \"\"}]",
+      "presets": "1: 1 2\n2: 1",
       "line_numbers": "1",
       "select_all": true,
+      "select_checked": false,
+      "use_preset": false,
+      "preset_line": 1,
       "weight": 1.1,
       "apply_weight": true,
       "add_break": false,

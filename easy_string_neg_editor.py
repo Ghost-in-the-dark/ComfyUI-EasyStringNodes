@@ -1,18 +1,28 @@
 """EasyStringNegEditor: SelectorNeg logic plus a visual row editor.
 
-Each "row" is {pos, neg, img}:
+Each "row" is {num?, cat?, on?, pos, neg, img}:
+  * num   - optional original number kept when rows are imported from an
+            old numbered dataset ("N: ... ~"); presets and line_numbers
+            resolve numbers against num first, then by 1-based position
+  * cat   - optional category label (free text, e.g. "artists", "body")
+            used by the UI to filter / group the row list
+  * on    - optional checkbox flag; when the node input 'select_checked'
+            is on, only rows with on=true are used (manual pick mode)
   * pos   - positive prompt text
   * neg   - negative prompt text
   * img   - optional image, stored in the workflow JSON as a downscaled
             data URL so the workflow stays self-contained. The image is a
             UI aid (preview on hover); this Python module never loads it.
-
-The row list lives in the hidden "rows" JSON widget and is edited through
-the custom front-end dialog (see web/easy_string_neg_editor.js). Selection
-reuses the same syntax as the other nodes: "1", "1,3", "2-4".
+The row list lives in the hidden "rows" JSON widget and the
+hidden "presets" plain-text widget ("N: 1 2 3" lines, one number set per
+preset); both are edited through the custom front-end dialog (see
+web/easy_string_neg_editor.js). A preset number selects the rows whose
+numbers are listed in that preset (num first, position fallback).
+Selection reuses the same syntax as the other nodes: "1", "1,3", "2-4".
 """
 
 import json
+import re
 
 try:
     from .utils import (  # package context (ComfyUI loads the folder as a package)
@@ -37,9 +47,16 @@ except ImportError:  # plain script / test context
 def default_rows():
     """Two demo rows so the node works right after it is added."""
     return [
-        {"pos": "a cute cat", "neg": "dog, blurry", "img": ""},
-        {"pos": "a bird in flight", "neg": "watermark", "img": ""},
+        {"cat": "animals", "on": true, "pos": "a cute cat",
+         "neg": "dog, blurry", "img": ""},
+        {"cat": "animals", "on": false, "pos": "a bird in flight",
+         "neg": "watermark", "img": ""},
     ]
+
+
+def default_presets():
+    """No presets by default."""
+    return ""
 
 
 class EasyStringNegEditor:
@@ -55,7 +72,17 @@ class EasyStringNegEditor:
                         "multiline": True,
                         "default": json.dumps(default_rows(), ensure_ascii=False),
                         "tooltip": "Row list edited in the Add / Edit dialog "
-                                   "(JSON: [{pos, neg, img}, ...])",
+                                   "(JSON: [{num?, cat?, on?, pos, neg, img}, ...])",
+                    },
+                ),
+                "presets": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": default_presets(),
+                        "tooltip": "Preset sets, one per line: 'N: row numbers' "
+                                   "e.g. '1: 108 193 135'. Edited/imported in "
+                                   "the dialog Presets tab.",
                     },
                 ),
                 "line_numbers": (
@@ -63,7 +90,8 @@ class EasyStringNegEditor:
                     {
                         "default": "1",
                         "tooltip": "Rows to use when 'select_all' is off, "
-                                   "e.g. 1,3 or 2-4",
+                                   "'use_preset' is off and 'select_checked' "
+                                   "is off, e.g. 1,3 or 2-4",
                     },
                 ),
                 "select_all": (
@@ -72,6 +100,25 @@ class EasyStringNegEditor:
                         "default": True,
                         "label_on": "use all rows",
                         "label_off": "use line_numbers",
+                    },
+                ),
+                "use_preset": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "label_on": "use preset",
+                        "label_off": "use select_all / line_numbers",
+                    },
+                ),
+                "preset_line": (
+                    "INT",
+                    {
+                        "default": 1,
+                        "min": 1,
+                        "max": 10000,
+                        "step": 1,
+                        "tooltip": "Which preset (by its N) to apply when "
+                                   "'use_preset' is on",
                     },
                 ),
                 "weight": (
@@ -109,6 +156,17 @@ class EasyStringNegEditor:
                         "label_off": "blocked",
                     },
                 ),
+                "select_checked": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "label_on": "use ticked rows only",
+                        "label_off": "use line_numbers / preset",
+                        "tooltip": "On: only rows ticked with the checkbox in "
+                                   "the editor are used (manual pick mode); "
+                                   "overrides line_numbers and presets.",
+                    },
+                ),
             },
         }
 
@@ -116,14 +174,20 @@ class EasyStringNegEditor:
     RETURN_NAMES = ("positive_prompt", "negative_prompt")
     FUNCTION = "process"
     CATEGORY = "Text Processing"
-    DESCRIPTION = ("Positive/negative builder with a visual row editor: "
-                   "each row may carry an image shown on hover.")
-
-    # ------------------------------------------------------------------
+    DESCRIPTION = ("Positive/negative builder with a visual row editor, "
+                   "old-data import, categories, presets, checkbox pick "
+                   "and image hover previews.")
     # parsing
     # ------------------------------------------------------------------
+    @staticmethod
+    def _as_num(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     def _parse_rows(self, rows_value):
-        """Turn the widget JSON into a clean [{pos, neg, img}, ...] list."""
+        """Turn the widget JSON into a clean [{num, pos, neg, img}, ...] list."""
         if isinstance(rows_value, str):
             try:
                 data = json.loads(rows_value)
@@ -138,7 +202,7 @@ class EasyStringNegEditor:
         if not isinstance(data, list):
             raise ValueError(
                 "EasyStringNegEditor: 'rows' must be a JSON list of "
-                "{pos, neg, img} objects."
+                "{num?, pos, neg, img} objects."
             )
 
         rows = []
@@ -149,19 +213,84 @@ class EasyStringNegEditor:
                     f"(got {type(item).__name__})."
                 )
             img = item.get("img") or ""
+            cat = item.get("cat") or ""
+            on_raw = item.get("on", True)
+            if isinstance(on_raw, bool):
+                on = on_raw
+            elif isinstance(on_raw, (int, float)):
+                on = bool(on_raw)
+            elif isinstance(on_raw, str):
+                on = on_raw.strip().lower() not in ("", "0", "false", "no", "off")
+            else:
+                on = True
             rows.append({
+                "num": self._as_num(item.get("num")),
+                "cat": str(cat).strip(),
+                "on": on,
                 "pos": html_to_text(str(item.get("pos") or "")),
                 "neg": html_to_text(str(item.get("neg") or "")),
                 "img": img if isinstance(img, str) else "",
             })
         return rows
 
-    def _select_rows(self, rows, select_all, line_numbers):
+    def _parse_preset_lines(self, presets_value):
+        """Turn the 'presets' widget text into [{num, content}, ...].
+
+        Format (same as the import dialog): one preset per line, numbered
+        "N: 1 2 3" / "N: 1,3 5-7". Unnumbered non-blank lines are ignored.
+        """
+        out = []
+        for raw in (presets_value or "").split("\n"):
+            if not raw.strip():
+                continue
+            m = re.match(r"^\s*(\d+)\s*:\s*(.*?)\s*$", raw)
+            if not m:
+                continue
+            content = (m.group(2) or "").strip()
+            out.append({"num": int(m.group(1)), "content": content})
+        return out
+
+    def _resolve_preset_content(self, presets_value, preset_line):
+        """Return the number list (as text) of the requested preset.
+
+        Matches by explicit preset number first, then by 1-based position.
+        """
+        presets = self._parse_preset_lines(presets_value)
+        for p in presets:
+            if p["num"] == preset_line:
+                return p["content"]
+        if 1 <= preset_line <= len(presets):
+            return presets[preset_line - 1]["content"]
+        raise ValueError(
+            f"EasyStringNegEditor: preset {preset_line} not found "
+            f"({len(presets)} preset(s) defined in the Presets tab)."
+        )
+
+    @staticmethod
+    def _resolve_row_number(rows, number):
+        """Row whose explicit num == number, else 1-based position; None."""
+        for r in rows:
+            if r["num"] is not None and r["num"] == number:
+                return r
+        if 1 <= number <= len(rows):
+            return rows[number - 1]
+        return None
+
+    def _select_rows(self, rows, select_all, line_numbers,
+                      select_checked=False):
         if not rows:
             raise ValueError(
                 "EasyStringNegEditor: no rows defined - click 'Add / Edit "
                 "rows' on the node to create rows."
             )
+        if select_checked:
+            checked = [r for r in rows if r["on"]]
+            if not checked:
+                raise ValueError(
+                    "EasyStringNegEditor: 'select_checked' is on but no "
+                    "row is ticked - tick rows in the editor (checkbox)."
+                )
+            return checked
         if select_all:
             return rows
         numbers = parse_spec(line_numbers)
@@ -172,8 +301,9 @@ class EasyStringNegEditor:
             )
         chosen = []
         for n in numbers:
-            if 1 <= n <= len(rows):
-                chosen.append(rows[n - 1])
+            row = self._resolve_row_number(rows, n)
+            if row is not None:
+                chosen.append(row)
         if not chosen:
             raise ValueError(
                 f"EasyStringNegEditor: no row matches selection "
@@ -181,19 +311,57 @@ class EasyStringNegEditor:
             )
         return chosen
 
+    def _select_preset(self, rows, presets_value, preset_line):
+        if not rows:
+            raise ValueError(
+                "EasyStringNegEditor: no rows defined - click 'Add / Edit "
+                "rows' on the node to create rows."
+            )
+        content = self._resolve_preset_content(presets_value, preset_line)
+        if not content:
+            raise ValueError(
+                f"EasyStringNegEditor: preset {preset_line} is empty - "
+                "add row numbers in the Presets tab."
+            )
+        numbers = parse_spec(content)
+        if not numbers:
+            raise ValueError(
+                f"EasyStringNegEditor: preset {preset_line} has no usable "
+                "row numbers."
+            )
+        chosen = []
+        for n in numbers:
+            row = self._resolve_row_number(rows, n)
+            if row is not None:
+                chosen.append(row)
+        if not chosen:
+            raise ValueError(
+                f"EasyStringNegEditor: preset {preset_line} ('{content}') "
+                f"matches no row ({len(rows)} row(s) available)."
+            )
+        return chosen
+
     # ------------------------------------------------------------------
     # main
     # ------------------------------------------------------------------
-    def process(self, rows, line_numbers="1", select_all=True, weight=1.0,
-                apply_weight=True, add_break=False, preset_trigger=True):
+    def process(self, rows, presets="", line_numbers="1", select_all=True,
+                use_preset=False, preset_line=1, select_checked=False,
+                weight=1.0, apply_weight=True, add_break=False,
+                preset_trigger=True):
         if not preset_trigger:
-            raise ValueError(
-                "EasyStringNegEditor: preset_trigger is off. Connect a true "
-                "input (or set the widget) to let this node run."
-            )
+            raise ValueError("EasyStringNegEditor: preset_trigger is off. "
+                             "Connect a true input (or set the widget) to "
+                             "let this node run.")
 
         parsed = self._parse_rows(rows)
-        chosen = self._select_rows(parsed, select_all, line_numbers)
+        # manual checkbox mode wins over everything else
+        if select_checked:
+            chosen = self._select_rows(parsed, select_all, line_numbers,
+                                       select_checked=True)
+        elif use_preset:
+            chosen = self._select_preset(parsed, presets, preset_line)
+        else:
+            chosen = self._select_rows(parsed, select_all, line_numbers)
 
         formatted_weight = format_weight(weight) if apply_weight else None
         positives, negatives = [], []

@@ -19,7 +19,7 @@ All nodes are pure Python (standard library only) — no extra packages are requ
 | \`EasyStringSelector\` | Easy String Selector | Text Processing | V2 + preset-driven line selection + trigger gate |
 | \`EasyStringSelectorNeg\` | Easy String Selector Neg | Text Processing | Split selected lines into positive and negative prompts |
 | \`ConcatenatePromptsNode\` | Concatenate Prompts | Text Processing | Join the connected prompt inputs into one string |
-| \`EasyStringNegEditor\` | Easy String Neg Editor | Text Processing | SelectorNeg-style positive/negative builder with a visual row editor + image hover preview |
+| \`EasyStringNegEditor\` | Easy String Neg Editor | Text Processing | SelectorNeg-style positive/negative builder: visual row editor, old-data import, presets, categories, checkbox manual pick, image hover preview |
 
 ## Installation
 
@@ -149,33 +149,49 @@ Each selected line may contain \`positive --- negative\`. The part before the fi
 
 *SelectorNeg-style* positive/negative builder backed by a **visual row editor**. The node works on both the classic (legacy) ComfyUI frontend and the new Vue-based frontend.
 
-Each row has three parts: a **positive** prompt, a **negative** prompt and an optional **image**. Images are stored in the workflow JSON itself (downscaled, as a data URL), so the workflow stays self-contained and needs no upload; the image is only a UI aid — it is shown in a preview when you hover the row, and is never sent to the API prompt.
+Each row has: an optional **original number** (#), an optional **category**, a tick **checkbox**, a **positive** prompt, a **negative** prompt and an optional **image**. Images are stored in the workflow JSON itself (downscaled, as a data URL), so the workflow stays self-contained and needs no upload; the image is only a UI aid — it is shown in a preview when you hover the row, and is never sent to the API prompt.
+
+The **category** is a free-text label shown as a small chip on each row; the dialog can filter the list by category. The **checkbox** on each row is a manual pick: when the node input `select_checked` is on, only ticked rows reach the output (this overrides `select_all` and presets).
 
 **Inputs**
 
 | Input | Type | Default | Notes |
 | --- | --- | --- | --- |
-| \`rows\` | STRING (JSON) | 2 demo rows | \`[{pos, neg, img}, …]\`; edit it through the **Add / Edit rows** button, not by hand |
-| \`line_numbers\` | STRING | \`1\` | rows to use when \`select_all\` is off (\`1,3\` or \`2-4\`) |
-| \`select_all\` | BOOLEAN | \`true\` | \`true\` = use every row, \`false\` = use \`line_numbers\` |
-| \`weight\` | FLOAT (slider) | \`1.0\` | element weight |
-| \`apply_weight\` | BOOLEAN | \`true\` | rewrite each element as \`(text:weight)\` |
-| \`add_break\` | BOOLEAN | \`false\` | append \` BREAK\` to the positive output |
-| \`preset_trigger\` | BOOLEAN (input) | \`true\` | enable gate; when \`false\` the node raises an error |
+| `rows` | STRING (JSON) | 2 demo rows | `[{num?, cat?, on?, pos, neg, img}, …]`; edit it through the **Add / Edit rows** button, not by hand |
+| `presets` | STRING (text) | empty | one preset per line: `N: row numbers` (`1: 108 193 135`); edit/import it in the **Presets** tab |
+| `line_numbers` | STRING | `1` | rows to use when `select_all`/`use_preset`/`select_checked` are off (`1,3` or `2-4`) |
+| `select_all` | BOOLEAN | `true` | `true` = use every row, `false` = use `line_numbers` |
+| `select_checked` | BOOLEAN | `false` | `true` = use only rows ticked with the checkbox in the editor (manual pick; overrides `line_numbers` and presets) |
+| `use_preset` | BOOLEAN | `false` | `true` = use the preset chosen in `preset_line` instead of rows selection |
+| `preset_line` | INT | `1` | which preset (by its number) to apply when `use_preset` is on |
+| `weight` | FLOAT (slider) | `1.0` | element weight |
+| `apply_weight` | BOOLEAN | `true` | rewrite each element as `(text:weight)` |
+| `add_break` | BOOLEAN | `false` | append ` BREAK` to the positive output |
+| `preset_trigger` | BOOLEAN (input) | `true` | enable gate; when `false` the node raises an error |
+| `select_checked` | BOOLEAN | `false` | `true` = use only rows ticked with the checkbox in the editor (manual pick; overrides `line_numbers` and presets) |
 
 **Outputs:** \`positive_prompt\` (STRING), \`negative_prompt\` (STRING)
 
-Rows behave exactly like \`positive --- negative\` lines in *EasyStringSelectorNeg*: row text is split into comma-separated elements (respecting \`()\`/\`[]\`/\`{}\`), each element is optionally re-weighted, positives are joined to the positive output and negatives to the negative output.
+Rows behave exactly like \`positive --- negative\` lines in *EasyStringSelectorNeg*: row text is split into comma-separated elements (respecting \`()\`/\`[]\`/\`{}\`), each element is optionally re-weighted, positives are joined to the positive output and negatives to the negative output. A preset number selects the rows whose numbers are listed in it — each number matches a row's **original #** first, then falls back to the 1-based position in the list.
+
+**Importing old data**
+
+The **↧ Import old data** button (Rows tab) pastes a numbered dataset — exactly the format of the old *Easy String Selector Neg* text, one line per row ending with \`~\` — and turns every line into a row: the number is stored as the row's **original #** and the rest of the line goes into the chosen field (**Negative** by default). Paste from the clipboard or choose a \`.txt\` file. Original numbers are kept so presets and \`line_numbers\` keep addressing the same rows even after reordering or editing.
+
+**Presets**
+
+The **Presets** tab edits the \`presets\` field directly (\`presetNumber: row numbers\`, e.g. \`7: 108 193 135\`; spaces, commas and ranges like \`1,3 5-7\` all work). Use **↧ Import presets…** to paste a whole block. Set \`use_preset = true\` and choose \`preset_line\` on the node to drive the output from a preset instead of the row selection.
 
 **Using the editor**
 
-- Click the **✎ Add / Edit rows** button on the node to open the dialog.
-- **Add row** appends a new row; each card has ↑/↓ to reorder, 🗑 to delete, and **Positive**/**Negative** textareas.
-- Click (or drag & drop an image onto) the image square, or paste from the clipboard, to attach an image to a row.
-- **Save** writes the rows back into the \`rows\` widget; **Cancel** (or Esc) discards the changes.
+- Click the **✎ Rows / Presets — edit** button on the node to open the dialog.
+- **Rows** tab: search box, **category filter**, **+ Add row** and **↧ Import old data**; click any card to edit its tick, category, fields, original number (#), image, order (↑/↓) or delete (🗑). The row list scrolls inside the dialog, so the toolbar stays visible.
+- Ticking a row on the node canvas itself (the checkbox at the row start) also toggles its state — the wheel over the list scrolls long row sets right on the node.
+- **Presets** tab: type or import \`N: row numbers\` lines directly.
+- **Save** writes rows and presets back into the hidden \`rows\`/\`presets\` widgets; **Cancel** (or Esc) discards the changes.
 - Hovering a drawn row shows a floating preview with that row's image (when it has one).
 
-> The hidden textarea that stores \`rows\` keeps the standard widget name, so workflows, copy/paste and the API prompt work unchanged. The custom list widget never enters the API prompt.
+> The hidden textareas that store \`rows\` and \`presets\` keep their standard widget names, so workflows, copy/paste and the API prompt work unchanged. The custom list widget never enters the API prompt.
 
 ## ConcatenatePromptsNode
 
@@ -202,7 +218,7 @@ API-format examples live in [examples/workflows](examples/workflows):
 - \`easy_string_v2_weighted.json\` — *EasyStringV2*, weight elements of one line
 - \`easy_string_selector_preset.json\` — *EasyStringSelector*, preset-driven selection
 - \`selector_neg_positive_negative.json\` — *EasyStringSelectorNeg*, positive/negative split
-- \`easy_string_neg_editor.json\` — *EasyStringNegEditor*, two demo rows
+- \`easy_string_neg_editor.json\` — *EasyStringNegEditor*, two demo rows + demo presets
 
 Load them with the ComfyUI **API-format** workflow loader, or POST the JSON to the \`/prompt\` endpoint.
 
