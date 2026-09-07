@@ -59,16 +59,24 @@ function focusSearch(node) {
   searchNode = node;
   const inp = ensureSearchInput();
   const st = state(node);
+  if (window.__ESN_DEBUG) {
+    console.log("[ESN-search] focusSearch node=" + (node.title || node.type) +
+      " inputInDom=" + !!(inp && inp.parentNode) +
+      " searchFocusWas=" + st.searchFocus +
+      " activeEl=" + (document.activeElement === inp ? "input" : String(document.activeElement && document.activeElement.tagName)));
+  }
   if (st.searchFocus) {
     // already focused: keep focus and select-all so typing replaces the text
     inp.focus();
     inp.select();
+    if (window.__ESN_DEBUG) console.log("[ESN-search] was focused: re-focus+select, now active=" + (document.activeElement === inp));
     return;
   }
   inp.value = st.search || "";
   st.searchFocus = true;
   inp.focus();
   inp.select();
+  if (window.__ESN_DEBUG) console.log("[ESN-search] focused, now active=" + (document.activeElement === inp) + " val='" + inp.value + "'");
 }
 
 function clearSearch() {
