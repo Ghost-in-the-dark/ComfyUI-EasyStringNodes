@@ -160,15 +160,6 @@ class EasyStringNegEditor:
                         "label_off": "no BREAK",
                     },
                 ),
-                "preset_trigger": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "forceInput": True,
-                        "label_on": "trigger",
-                        "label_off": "blocked",
-                    },
-                ),
                 "select_checked": (
                     "BOOLEAN",
                     {
@@ -188,6 +179,19 @@ class EasyStringNegEditor:
                                    "(e.g. artists.json). When set, rows and "
                                    "presets are loaded from that file at run time "
                                    "instead of from the widget values.",
+                    },
+                ),
+            },
+            "optional": {
+                "preset_trigger": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "forceInput": True,
+                        "label_on": "trigger",
+                        "label_off": "blocked",
+                        "tooltip": "Optional run gate: leave unconnected to "
+                                   "always run, or connect false to block.",
                     },
                 ),
             },
@@ -371,10 +375,13 @@ class EasyStringNegEditor:
                 use_preset=False, preset_line=1, select_checked=False,
                 data_file="", weight=1.0, apply_weight=True, add_break=False,
                 preset_trigger=True):
-        if not preset_trigger:
-            raise ValueError("EasyStringNegEditor: preset_trigger is off. "
-                             "Connect a true input (or set the widget) to "
-                             "let this node run.")
+        if preset_trigger is False or preset_trigger == 0 or (
+            isinstance(preset_trigger, str)
+            and preset_trigger.strip().lower() in ("0", "false", "no", "off")
+        ):
+            raise ValueError("EasyStringNegEditor: preset_trigger is off "
+                             "(connected value is false). Leave the input "
+                             "unconnected or connect true to let this node run.")
 
         if data_file:
             # dataset mode: rows + presets come from a file on disk, not from

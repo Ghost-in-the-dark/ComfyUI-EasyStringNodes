@@ -167,7 +167,7 @@ The **category** is a free-text label shown as a small chip on each row; the dia
 | `weight` | FLOAT (slider) | `1.0` | element weight |
 | `apply_weight` | BOOLEAN | `true` | rewrite each element as `(text:weight)` |
 | `add_break` | BOOLEAN | `false` | append ` BREAK` to the positive output |
-| `preset_trigger` | BOOLEAN (input) | `true` | enable gate; when `false` the node raises an error |
+| `preset_trigger` | BOOLEAN (optional input) | `true` | optional run gate - **leave unconnected to always run**, or connect `false` to block the node with an error |
 | `data_file` | STRING | empty | dataset file name in the node **data folder** (e.g. `artists.json`); when set, rows + presets are loaded from that file at run time and the workflow stores only this name |
 
 **Outputs:** \`positive_prompt\` (STRING), \`negative_prompt\` (STRING)
@@ -187,6 +187,7 @@ The **Presets** tab edits the \`presets\` field directly (\`presetNumber: row nu
 - Click the **✎ Rows / Presets — edit** button on the node to open the dialog.
 - **Rows** tab: search box, **category filter**, **+ Add row**, **↧ Import old data** and the bulk **✓ all / ✗ none** buttons (tick or untick every row in one click); click any card to edit its tick, category, fields, original number (#), image, order (↑/↓) or delete (🗑). With many rows the dialog renders only the visible part of the list and fills more as you scroll, so it opens instantly even for huge datasets.
 - Ticking a row on the node canvas itself (the checkbox at the row start) also toggles its state. Long row sets scroll right on the node with the mouse wheel or the drawn **▲ / ▼** arrows under the list.
+- A **Presets** panel is drawn right on the node under the rows (like the old *Easy String Selector Neg*): it lists the preset lines, highlights the active one, and shows `preset off — all rows / line_numbers mode` when no preset is picked. Use the mini **use:on/off** toggle and the **◀ / ▶** buttons right there to turn the preset mode on and pick a preset, or click a preset line / the panel header to open the dialog on the **Presets** tab.
 - **Presets** tab: type or import \`N: row numbers\` lines directly.
 - **Data file** tab: save the whole dataset (rows + presets) to a `.json` file in the node **data folder** (`ComfyUI-EasyStringNodes/data`): type a name (e.g. `artists.json`) and press **Save to file**, or click an existing file to load it. Once a file name is set, the workflow stores only that name - the rows live on disk and can be shared across workflows. The main **Save** button also rewrites the file when a name is set.
 - **Save** writes rows and presets (including presets typed in the Presets tab) back into the hidden \`rows\`/\`presets\` widgets in embedded mode, or into the dataset file in dataset mode; **Cancel** (or Esc) discards the changes.

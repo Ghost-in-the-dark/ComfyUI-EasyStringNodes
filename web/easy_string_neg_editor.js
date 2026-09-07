@@ -51,6 +51,11 @@ const RENDER_CHUNK = 60;
 
 const ROW_H = 20; // px per drawn row
 const HEADER_H = 24;
+// presets section drawn below the row list on the node canvas
+const MAX_DRAWN_PRESETS = 4; // preset lines visible on the node
+const PRESET_H = 16; // px per preset line
+const PRESET_HDR_H = 18; // px for the "Presets" section header
+const PRESET_GAP = 4; // px above the section
 const IMG_MAX_EDGE = 384;
 const IMG_QUALITY = 0.82;
 const NL = String.fromCharCode(10); // newline without backslash escapes
@@ -140,6 +145,14 @@ function state(node) {
       widgetY: 0,
       widgetH: 0,
       scroll: 0, // rows scrolled past the top on the node canvas
+      presetScroll: 0, // presets scrolled past the top of the presets section
+      presetRects: [], // {top,bottom,num,content} hit zones of preset lines
+      presetsHeader: null, // {top,bottom} hit zone of the section header
+      presetUp: null, // {top,bottom} hit zone of the presets ▲
+      presetDown: null, // {top,bottom} hit zone of the presets ▼
+      presetUse: null, // {x,y,w,h} "use_preset" toggle button
+      presetPrev: null, // {x,y,w,h} previous preset button
+      presetNext: null, // {x,y,w,h} next preset button
       file: "", // dataset file name (data_file widget) or ""
       loadedFile: null, // name of the file already loaded into rows/presets
       fileLoading: false,
@@ -353,6 +366,68 @@ function countPresets(text) {
   return n;
 }
 
+// Numbered preset entries from the presets widget text: [{num, text}].
+function presetEntries(text) {
+  const out = [];
+  const lines = String(text == null ? "" : text).split(NL);
+  for (const raw of lines) {
+    const line = String(raw).trim();
+    if (!line) continue;
+    const ci = line.indexOf(":");
+    if (ci <= 0) continue;
+    const head = line.slice(0, ci).trim();
+    if (!isDigits(head)) continue;
+    out.push({ num: parseInt(head, 10), text: line });
+  }
+  return out;
+}
+
+// Current run-time preset choice from the python widgets (use_preset, preset_line).
+function presetChoice(node) {
+  const useW = findWidget(node, "use_preset");
+  const lineW = findWidget(node, "preset_line");
+  let on = false;
+  let line = 1;
+  try { if (useW && useW.value != null) on = !!useW.value; } catch (e) {}
+  try {
+    if (lineW && lineW.value != null) {
+      const v = Number(lineW.value);
+      if (Number.isFinite(v) && v >= 1) line = Math.round(v);
+    }
+  } catch (e) {}
+  return { on: on, line: line };
+}
+
+// Move the active preset by dir (-1 / +1) along the numbered preset list.
+function stepPresetChoice(node, dir) {
+  const entries = presetEntries(state(node).presets);
+  if (!entries.length) return;
+  const cur = presetChoice(node);
+  let idx = entries.findIndex((e) => e.num === cur.line);
+  if (idx < 0) idx = cur.on ? 0 : 0;
+  idx = (idx + dir + entries.length) % entries.length;
+  setPresetChoice(node, entries[idx].num);
+}
+
+// Write the active preset number back into the python widgets.
+function setPresetChoice(node, num) {
+  const useW = findWidget(node, "use_preset");
+  const lineW = findWidget(node, "preset_line");
+  if (lineW) {
+    try {
+      lineW.value = num;
+      if (typeof lineW.callback === "function") lineW.callback(num);
+    } catch (e) {}
+  }
+  if (useW) {
+    try {
+      useW.value = true;
+      if (typeof useW.callback === "function") useW.callback(true);
+    } catch (e) {}
+  }
+  try { app.graph?.setDirtyCanvas?.(true, true); } catch (e) {}
+}
+
 // Keep only numbered "N: ..." preset lines (drops stray text).
 function normalizePresetText(text) {
   const out = [];
@@ -514,14 +589,21 @@ function rowCount(node) {
 }
 
 function listHeight(node) {
-  const n = Math.min(rowCount(node), MAX_DRAWN_ROWS);
-  const extra = rowCount(node) > MAX_DRAWN_ROWS ? 16 : 0;
-  return HEADER_H + n * ROW_H + extra + 6;
+  const total = rowCount(node);
+  const n = Math.min(total, MAX_DRAWN_ROWS);
+  let h = HEADER_H + n * ROW_H;
+  if (total > MAX_DRAWN_ROWS || n === 0) h += 18; // scroll hint / "no rows"
+  const entries = presetEntries(state(node).presets);
+  const nP = Math.min(entries.length, MAX_DRAWN_PRESETS);
+  h += PRESET_GAP + PRESET_HDR_H + nP * PRESET_H;
+  if (entries.length > MAX_DRAWN_PRESETS) h += 16; // ▲/▼ row
+  h += entries.length ? 20 : 18; // control row or "no presets" hint
+  return h + 4;
 }
 
-function openEditor(node, index) {
+function openEditor(node, index, initialTab) {
   // implemented below; indirection keeps definition order simple
-  showDialog(node, index);
+  showDialog(node, index, initialTab);
 }
 
 function makeListWidget(node) {
@@ -568,6 +650,13 @@ function makeListWidget(node) {
 
       // rows
       st.rects.length = 0;
+      st.presetRects.length = 0;
+      st.presetsHeader = null;
+      st.presetUp = null;
+      st.presetDown = null;
+      st.presetUse = null;
+      st.presetPrev = null;
+      st.presetNext = null;
       const total = rowCount(n);
       const maxScroll = Math.max(0, total - MAX_DRAWN_ROWS);
       if (st.scroll > maxScroll) st.scroll = maxScroll;
@@ -629,6 +718,7 @@ function makeListWidget(node) {
       st.scrollUp = null;
       st.scrollDown = null;
       const canScroll = total > MAX_DRAWN_ROWS;
+      let rowsBottom = ry; // rows area ends here (below the scroll hint)
       if (canScroll) {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -644,13 +734,121 @@ function makeListWidget(node) {
         ctx.textAlign = "center";
         const leftCount = total - (st.scroll + shown);
         ctx.fillText(leftCount > 0 ? ("\u2193 " + leftCount + " more - wheel / arrows") : "(wheel to scroll)", cx, ry + 15);
+        rowsBottom = ry + 18;
       } else if (shown === 0) {
         ctx.fillStyle = "rgba(255,255,255,0.25)";
         ctx.font = "10px sans-serif";
         ctx.textAlign = "center";
         ctx.fillText("(no rows yet - click the header to add)", cx, ry + 12);
+        rowsBottom = ry + 18;
       }
       ctx.restore();
+
+      // ---- presets section (visible on the node like the old SelectorNeg) ----
+      const entries = presetEntries(st.presets);
+      const secTop = rowsBottom + PRESET_GAP;
+      const secLeft = 12;
+      const secW = fullW - 24;
+      // section header (click → dialog Presets tab)
+      st.presetsHeader = { top: secTop, bottom: secTop + PRESET_HDR_H };
+      ctx.save();
+      ctx.fillStyle = "rgba(60,40,20,0.35)";
+      ctx.fillRect(secLeft, secTop, secW, PRESET_HDR_H);
+      ctx.fillStyle = "#fca";
+      ctx.font = "bold 10px sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText("Presets (" + entries.length + ") — " + (entries.length ? "click a line to open · use/◀/▶ to pick" : "click to add"), secLeft + 6, secTop + PRESET_HDR_H / 2);
+      let pBottom = secTop + PRESET_HDR_H;
+      if (entries.length) {
+        const choice = presetChoice(n);
+        const activeIdx = entries.findIndex((e) => choice.on && e.num === choice.line);
+        const maxPScroll = Math.max(0, entries.length - MAX_DRAWN_PRESETS);
+        if (st.presetScroll > maxPScroll) st.presetScroll = maxPScroll;
+        if (st.presetScroll < 0) st.presetScroll = 0;
+        // keep the active preset visible when possible
+        if (activeIdx >= 0 && (activeIdx < st.presetScroll || activeIdx >= st.presetScroll + MAX_DRAWN_PRESETS)) {
+          st.presetScroll = Math.max(0, Math.min(maxPScroll, activeIdx - Math.floor(MAX_DRAWN_PRESETS / 2)));
+        }
+        const shownP = Math.min(entries.length - st.presetScroll, MAX_DRAWN_PRESETS);
+        ctx.font = "10px monospace";
+        for (let i = 0; i < shownP; i++) {
+          const en = entries[st.presetScroll + i];
+          const rowTop = pBottom;
+          const rowBottom = rowTop + PRESET_H;
+          const isActive = activeIdx >= 0 && en.num === entries[activeIdx].num;
+          ctx.fillStyle = isActive ? "rgba(30,120,70,0.35)" : ((st.presetScroll + i) % 2 ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.2)");
+          ctx.fillRect(secLeft, rowTop, secW, PRESET_H);
+          ctx.fillStyle = isActive ? "#7f7" : "rgba(255,255,255,0.6)";
+          ctx.textAlign = "left";
+          const lineTxt = clampText(en.text, Math.max(8, secW - 6));
+          ctx.fillText((isActive ? "\u25b6 " : "  ") + lineTxt, secLeft + 4, rowTop + PRESET_H / 2);
+          st.presetRects.push({ top: rowTop, bottom: rowBottom, num: en.num });
+          pBottom = rowBottom;
+        }
+        if (entries.length > MAX_DRAWN_PRESETS) {
+          const ay = pBottom + 7;
+          ctx.fillStyle = st.presetScroll > 0 ? "#c97" : "rgba(255,255,255,0.2)";
+          ctx.font = "bold 10px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText("\u25b2", cx - 14, ay);
+          ctx.fillStyle = st.presetScroll < maxPScroll ? "#c97" : "rgba(255,255,255,0.2)";
+          ctx.fillText("\u25bc", cx + 14, ay);
+          st.presetUp = { x: cx - 28, y: ay - 8, w: 28, h: 16 };
+          st.presetDown = { x: cx + 2, y: ay - 8, w: 28, h: 16 };
+          pBottom += 16;
+        }
+        // control row: use_preset toggle + active preset stepper
+        ctx.fillStyle = "rgba(255,255,255,0.06)";
+        ctx.fillRect(secLeft, pBottom, secW, 18);
+        const ctlY = pBottom + 9;
+        // left label
+        ctx.font = "9px sans-serif";
+        ctx.textAlign = "left";
+        const active = choice.on ? entries.find((e) => e.num === choice.line) : null;
+        ctx.fillStyle = active ? "#7f7" : "rgba(255,255,255,0.5)";
+        ctx.fillText(active
+          ? ("active preset " + choice.line + " → " + clampText(active.text, Math.max(6, secW - 120)))
+          : (choice.on ? ("preset " + choice.line + " not found") : "preset off — all rows / line_numbers"),
+          secLeft + 4, ctlY);
+        // right: [use] [◀] [▶] mini buttons
+        const btns = [
+          { key: "use", label: choice.on ? "use:on" : "use:off", color: choice.on ? "#7f7" : "#888" },
+          { key: "prev", label: "\u25c0", color: "#9cf", enabled: entries.length > 1 },
+          { key: "next", label: "\u25b6", color: "#9cf", enabled: entries.length > 1 },
+        ];
+        let bx = secLeft + secW - 4;
+        st.presetUse = null; st.presetPrev = null; st.presetNext = null;
+        for (let bi = btns.length - 1; bi >= 0; bi--) {
+          const b = btns[bi];
+          const w2 = bi === 0 ? 38 : 16;
+          bx -= w2;
+          const zone = { x: bx, y: pBottom + 2, w: w2, h: 14, key: b.key };
+          ctx.fillStyle = b.color;
+          ctx.globalAlpha = b.enabled === false ? 0.3 : 0.9;
+          ctx.strokeStyle = "rgba(255,255,255,0.25)";
+          ctx.strokeRect(bx, pBottom + 2, w2, 14);
+          ctx.font = b.key === "use" ? "8px sans-serif" : "9px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(b.label, bx + w2 / 2, ctlY);
+          ctx.globalAlpha = 1;
+          if (b.key === "use") st.presetUse = zone;
+          else if (b.key === "prev") st.presetPrev = zone;
+          else st.presetNext = zone;
+        }
+        pBottom += 20;
+      } else {
+        ctx.fillStyle = "rgba(255,255,255,0.28)";
+        ctx.font = "10px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("(no presets yet — click to add)", cx, pBottom + 9);
+        pBottom += 18;
+        // whole empty area opens the dialog on the Presets tab
+        st.presetsHeader = { top: secTop, bottom: pBottom };
+      }
+      ctx.restore();
+      st.presetsBottom = pBottom;
+      st.widgetH = Math.max(st.widgetH, pBottom - y + 2);
     },
     mouse(event, pos, node) {
       if (event.type !== "pointerdown" && event.type !== "mousedown") {
@@ -693,6 +891,48 @@ function makeListWidget(node) {
             return true;
           }
           openEditor(node, r.index);
+          return true;
+        }
+      }
+      // ---- presets section interactions ----
+      const maxPScroll = Math.max(0, presetEntries(st.presets).length - MAX_DRAWN_PRESETS);
+      const hitP = (z) => z && x >= z.x - 2 && x <= z.x + z.w + 2 && y >= z.y - 2 && y <= z.y + z.h + 2;
+      // ▲/▼ list scroll (only drawn when the list overflows)
+      if (maxPScroll > 0) {
+        if (hitP(st.presetUp)) {
+          st.presetScroll = Math.max(0, st.presetScroll - 2);
+          app.graph?.setDirtyCanvas?.(true, true);
+          return true;
+        }
+        if (hitP(st.presetDown)) {
+          st.presetScroll = Math.min(maxPScroll, st.presetScroll + 2);
+          app.graph?.setDirtyCanvas?.(true, true);
+          return true;
+        }
+      }
+      // control buttons on the bottom control row
+      if (hitP(st.presetUse)) {
+        const useW = findWidget(node, "use_preset");
+        if (useW) {
+          try {
+            useW.value = !useW.value;
+            if (typeof useW.callback === "function") useW.callback(useW.value);
+          } catch (e) {}
+        }
+        app.graph?.setDirtyCanvas?.(true, true);
+        return true;
+      }
+      if (hitP(st.presetPrev)) { stepPresetChoice(node, -1); return true; }
+      if (hitP(st.presetNext)) { stepPresetChoice(node, 1); return true; }
+      // section header → dialog on the Presets tab (edit text)
+      if (st.presetsHeader && y >= st.presetsHeader.top - 1 && y <= st.presetsHeader.bottom + 1) {
+        openEditor(node, null, "presets");
+        return true;
+      }
+      // clicking a preset line opens the dialog on the Presets tab too
+      for (const pr of st.presetRects) {
+        if (y >= pr.top - 1 && y <= pr.bottom + 1) {
+          openEditor(node, null, "presets");
           return true;
         }
       }
@@ -884,8 +1124,9 @@ function installHover() {
         const size = node.size || [220, 100];
         if (gx < x0 || gx > x0 + size[0] || gy < y0 || gy > y0 + size[1]) continue;
         const ly = gy - y0;
-        // only when over the row list area (below header)
-        if (ly < st0.widgetY + HEADER_H || ly > st0.widgetY + st0.widgetH) continue;
+        // only when over the row list area (below header, above presets section)
+        const rowsEnd = st0.widgetY + HEADER_H + Math.min(Math.max(st0.rows.length, 1), MAX_DRAWN_ROWS) * ROW_H + 2;
+        if (ly < st0.widgetY + HEADER_H || ly > rowsEnd) continue;
         const total = st0.rows.length;
         const maxScroll = Math.max(0, total - MAX_DRAWN_ROWS);
         if (maxScroll <= 0) return false;
@@ -1234,7 +1475,7 @@ function buildRowCard(row, idx, api) {
 }
 
 // Rows working copy + API shared between the list and each card
-function showDialog(node, editIndex) {
+function showDialog(node, editIndex, initialTab) {
   closeDialog();
   syncFromWidget(node);
   const rows = cleanRows(state(node).rows); // working copy
@@ -1805,9 +2046,15 @@ function showDialog(node, editIndex) {
   dialog = dlg;
   dlgTimerRef = dlg;
 
+  if (initialTab === "presets" || initialTab === "data") {
+    showTab(initialTab);
+  }
   applyFilter();
   pTaRef.value = pTa;
   updateHint();
+  if (initialTab === "presets") {
+    try { if (pTa && typeof pTa.focus === "function") pTa.focus(); } catch (e) {}
+  }
 
   // focus requested row (or first field) once its card is rendered
   const targetIndex = editIndex != null ? editIndex : 0;

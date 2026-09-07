@@ -259,6 +259,34 @@ def test_neg_editor_trigger_blocked():
         node.process(ROWS_JSON, preset_trigger=False)
 
 
+def test_neg_editor_trigger_unset_runs():
+    # optional input: leaving preset_trigger unconnected must not break the node
+    node = EasyStringNegEditor()
+    pos, _ = node.process(ROWS_JSON, apply_weight=False)
+    assert pos != ""
+
+
+def test_neg_editor_trigger_none_runs():
+    # some frontends deliver None for an unconnected optional input
+    node = EasyStringNegEditor()
+    pos, _ = node.process(ROWS_JSON, preset_trigger=None, apply_weight=False)
+    assert pos != ""
+
+
+def test_neg_editor_trigger_true_runs():
+    node = EasyStringNegEditor()
+    pos, _ = node.process(ROWS_JSON, preset_trigger=True, apply_weight=False)
+    assert pos != ""
+
+
+def test_neg_editor_trigger_false_strings_block():
+    # an explicitly connected false (bool, number or text) still blocks
+    for bad in (False, 0, 0.0, "false", "0", "off", "no", "False", "OFF"):
+        node = EasyStringNegEditor()
+        with raises(ValueError):
+            node.process(ROWS_JSON, preset_trigger=bad, apply_weight=False)
+
+
 def test_neg_editor_bad_json_raises():
     node = EasyStringNegEditor()
     with raises(ValueError):
