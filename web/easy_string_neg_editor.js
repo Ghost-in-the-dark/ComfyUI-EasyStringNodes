@@ -325,8 +325,8 @@ function parseOldRows(text, dest) {
   for (const raw of lines) {
     const parsed = parseOldLine(raw);
     if (!parsed) continue;
-    const row = { num: parsed.num, pos: "", neg: "", img: "" };
     const row = { num: parsed.num, cat: "", on: true, pos: "", neg: "", img: "" };
+    if (dest === "pos") {
       row.pos = parsed.content;
     } else {
       row.neg = parsed.content;
@@ -769,7 +769,7 @@ function installHover() {
         app.graph?.setDirtyCanvas?.(true, true);
         return;
       }
-    },
+    }
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("pointerdown", hideHover);
   }
@@ -1143,8 +1143,7 @@ function showDialog(node, editIndex) {
 
   const list = document.createElement("div");
   Object.assign(list.style, { display: "flex", flexDirection: "column", gap: "6px", marginTop: "2px", overflowY: "auto", maxHeight: "56vh", paddingRight: "4px" });
-
-
+  rowsPanel.appendChild(list);
 
   const rowsApi = {
     moveUp(card) {
@@ -1215,7 +1214,6 @@ function showDialog(node, editIndex) {
   catSel.addEventListener("change", applyFilter);
 
   addBtn.addEventListener("click", () => {
-    const row = { num: null, pos: "", neg: "", img: "" };
     const row = { num: null, cat: "", on: true, pos: "", neg: "", img: "" };
     const card = buildRowCard(row, rows.length - 1, rowsApi);
     list.appendChild(card);
@@ -1421,3 +1419,117 @@ function showDialog(node, editIndex) {
       } else {
         pos = row.pos;
         neg = row.neg;
+      }
+      out.push({
+        num: row.num != null ? row.num : null,
+        cat: typeof row.cat === "string" ? row.cat : "",
+        on: row.on !== false,
+        pos: pos,
+        neg: neg,
+        img: typeof row.img === "string" ? row.img : "",
+      });
+    });
+    commitRows(node, out);
+    resizeNode(node);
+    closeDialog();
+  });
+
+  footer.appendChild(hint);
+  footer.appendChild(cancelBtn);
+  footer.appendChild(saveBtn);
+
+  document.body.appendChild(overlay);
+
+  const dlg = { _overlay: overlay, _onKey: null };
+  const onKey = (e) => {
+    if (e.key === "Escape") closeDialog();
+  };
+  document.addEventListener("keydown", onKey);
+  dlg._onKey = onKey;
+  dialog = dlg;
+
+  applyFilter();
+
+  // focus requested row (or first field)
+  const cards = Array.from(list.children);
+  const target = editIndex != null && cards[editIndex] ? cards[editIndex] : cards[0];
+  if (target) {
+    const ta = target.querySelector("textarea");
+    if (ta) ta.focus();
+    if (editIndex != null) target.scrollIntoView({ block: "center" });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// setup (idempotent, retries until python widgets exist)
+// ---------------------------------------------------------------------------
+
+function setupNode(node) {
+  if (!node || node.__esnSetupDone) return;
+  if (!node.widgets || !rowsWidget(node)) {
+    // python widgets may be created a tick after onNodeCreated on some UIs
+    if (!node.__esnRetries) node.__esnRetries = 0;
+    if (node.__esnRetries < 200) {
+      node.__esnRetries += 1;
+      setTimeout(() => setupNode(node), 30);
+    }
+    return;
+  }
+  if (node.widgets.some((w) => w && w.name === UI_NAME)) {
+    // already added (e.g. reconfigure) — just refresh
+    node.__esnSetupDone = true;
+    hideRowsWidget(node);
+    syncFromWidget(node);
+    return;
+  }
+  node.__esnSetupDone = true;
+  hideRowsWidget(node);
+  syncFromWidget(node);
+  const widget = makeListWidget(node);
+  try {
+    if (typeof node.addCustomWidget === "function") {
+      node.addCustomWidget(widget);
+    } else if (node.widgets) {
+      node.widgets.push(widget);
+    }
+  } catch (err) {
+    console.error("EasyStringNegEditor: failed to add widget", err);
+    return;
+  }
+  node.__esnListWidget = widget;
+  installHover();
+  resizeNode(node);
+}
+
+function refreshNode(node) {
+  if (!node || node.type !== NODE_CLASS) return;
+  syncFromWidget(node);
+  resizeNode(node);
+}
+
+// ---------------------------------------------------------------------------
+// extension registration
+// ---------------------------------------------------------------------------
+
+app.registerExtension({
+  name: "Ghost.EasyStringNegEditor",
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (!nodeData || nodeData.name !== NODE_CLASS) return;
+
+    const onNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+      onNodeCreated?.apply(this, arguments);
+      setupNode(this);
+    };
+
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function () {
+      onConfigure?.apply(this, arguments);
+      // after a workflow/config restore, python widgets may be fresh —
+      // re-run setup (idempotent) and resync our list height
+      this.__esnSetupDone = false;
+      setupNode(this);
+      refreshNode(this);
+    };
+  },
+})
