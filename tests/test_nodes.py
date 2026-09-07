@@ -448,12 +448,27 @@ def test_neg_editor_select_checked_none_ticked_raises():
 
 
 def test_neg_editor_rows_without_on_default_to_ticked():
+    # rows WITHOUT an "on" field (legacy data) still count as ticked
     node = EasyStringNegEditor()
     rows = json.dumps([
         {'pos': 'a', 'neg': '', 'img': ''},
         {'pos': 'b', 'neg': '', 'img': ''},
     ])
     pos, _ = node.process(rows, select_checked=True, apply_weight=False)
+    assert pos == 'a, b'
+
+
+def test_neg_editor_rows_with_explicit_false_start_unticked():
+    # rows the editor creates (explicit on=false) are NOT included unless ticked
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {'on': False, 'pos': 'a', 'neg': '', 'img': ''},
+        {'on': False, 'pos': 'b', 'neg': '', 'img': ''},
+    ])
+    with raises(ValueError):
+        node.process(rows, select_checked=True, apply_weight=False)
+    # ... but normal select_all still uses them all
+    pos, _ = node.process(rows, select_all=True, apply_weight=False)
     assert pos == 'a, b'
 
 

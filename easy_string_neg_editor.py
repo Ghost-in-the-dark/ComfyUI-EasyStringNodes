@@ -6,8 +6,10 @@ Each "row" is {num?, cat?, on?, pos, neg, img}:
             resolve numbers against num first, then by 1-based position
   * cat   - optional category label (free text, e.g. "artists", "body")
             used by the UI to filter / group the row list
-  * on    - optional checkbox flag; when the node input 'select_checked'
-            is on, only rows with on=true are used (manual pick mode)
+  * on    - checkbox flag. When the node input 'select_checked' is on,
+            only rows with on=true are used (manual pick mode). Rows the
+            editor creates (new or imported) start unticked (on=false);
+            rows without this field (legacy data) count as ticked.
   * pos   - positive prompt text
   * neg   - negative prompt text
   * img   - optional image, stored in the workflow JSON as a downscaled
@@ -58,7 +60,7 @@ except ImportError:  # plain script / test context
 def default_rows():
     """Two demo rows so the node works right after it is added."""
     return [
-        {"cat": "animals", "on": True, "pos": "a cute cat",
+        {"cat": "animals", "on": False, "pos": "a cute cat",
          "neg": "dog, blurry", "img": ""},
         {"cat": "animals", "on": False, "pos": "a bird in flight",
          "neg": "watermark", "img": ""},

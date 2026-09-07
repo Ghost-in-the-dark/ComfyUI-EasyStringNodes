@@ -397,7 +397,7 @@ function parseOldRows(text, dest) {
   for (const raw of lines) {
     const parsed = parseOldLine(raw);
     if (!parsed) continue;
-    const row = { num: parsed.num, cat: "", on: true, pos: "", neg: "", img: "" };
+    const row = { num: parsed.num, cat: "", on: false, pos: "", neg: "", img: "" };
     const marker = indexOfTopLevelDash(parsed.content);
     if (marker >= 0) {
       row.pos = parsed.content.slice(0, marker).trim();
@@ -1298,6 +1298,12 @@ function showDialog(node, editIndex) {
   });
   const addBtn = mkBtn("+ Add row", { bg: "#2f6f4f", color: "#fff" });
   const importBtn = mkBtn("↗ Import old data", { bg: "#5a4a2f", color: "#ffe8b0", title: "Paste numbered rows (N: … ~) or choose a file" });
+  // tick / untick every row at once (rows start unticked; only ticked rows
+  // are used when the node input select_checked is on)
+  const checkAllB = mkBtn("✓ all", { pad: "5px 9px", font: "12px", title: "Tick every row" });
+  checkAllB.addEventListener("click", () => { rows.forEach((r) => { r.on = true; }); applyFilter(); });
+  const uncheckAllB = mkBtn("✗ none", { pad: "5px 9px", font: "12px", title: "Untick every row" });
+  uncheckAllB.addEventListener("click", () => { rows.forEach((r) => { r.on = false; }); applyFilter(); });
   // category filter: built from all row cats; '' = all
   const catSel = document.createElement("select");
   const allOpt = document.createElement("option");
@@ -1325,6 +1331,8 @@ function showDialog(node, editIndex) {
   toolbar.appendChild(catSel);
   toolbar.appendChild(addBtn);
   toolbar.appendChild(importBtn);
+  toolbar.appendChild(checkAllB);
+  toolbar.appendChild(uncheckAllB);
   rowsPanel.appendChild(toolbar);
 
   const hintEl = document.createElement("div");
@@ -1414,7 +1422,7 @@ function showDialog(node, editIndex) {
     const showAll = viewRows.length === rows.length;
     hintEl.textContent = viewRows.length + " of " + rows.length + " row(s)" +
       (!showAll ? " (filtered)" : "") + (cat ? " - category: " + cat : "") +
-      " - tick a row to include it when select_checked is on";
+      " - rows start unticked: tick the ones to use when select_checked is on";
   }
 
   list.addEventListener("scroll", () => {
@@ -1428,7 +1436,7 @@ function showDialog(node, editIndex) {
   catSel.addEventListener("change", applyFilter);
 
   addBtn.addEventListener("click", () => {
-    const row = { num: null, cat: "", on: true, pos: "", neg: "", img: "" };
+    const row = { num: null, cat: "", on: false, pos: "", neg: "", img: "" };
     rows.push(row);
     rebuildCats();
     searchInp.value = "";

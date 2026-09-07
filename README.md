@@ -149,7 +149,7 @@ Each selected line may contain \`positive --- negative\`. The part before the fi
 
 *SelectorNeg-style* positive/negative builder backed by a **visual row editor**. The node works on both the classic (legacy) ComfyUI frontend and the new Vue-based frontend.
 
-Each row has: an optional **original number** (#), an optional **category**, a tick **checkbox**, a **positive** prompt, a **negative** prompt and an optional **image**. Images are stored in the workflow JSON itself (downscaled, as a data URL), so the workflow stays self-contained and needs no upload; the image is only a UI aid — it is shown in a preview when you hover the row, and is never sent to the API prompt.
+Each row has: an optional **original number** (#), an optional **category**, a tick **checkbox**, a **positive** prompt, a **negative** prompt and an optional **image**. New rows and imported rows **start unticked** - tick the ones you want to use when `select_checked` is on. Images are stored in the workflow JSON itself (downscaled, as a data URL), so the workflow stays self-contained and needs no upload; the image is only a UI aid — it is shown in a preview when you hover the row, and is never sent to the API prompt.
 
 The **category** is a free-text label shown as a small chip on each row; the dialog can filter the list by category. The **checkbox** on each row is a manual pick: when the node input `select_checked` is on, only ticked rows reach the output (this overrides `select_all` and presets).
 
@@ -169,7 +169,6 @@ The **category** is a free-text label shown as a small chip on each row; the dia
 | `add_break` | BOOLEAN | `false` | append ` BREAK` to the positive output |
 | `preset_trigger` | BOOLEAN (input) | `true` | enable gate; when `false` the node raises an error |
 | `data_file` | STRING | empty | dataset file name in the node **data folder** (e.g. `artists.json`); when set, rows + presets are loaded from that file at run time and the workflow stores only this name |
-| `select_checked` | BOOLEAN | `false` | `true` = use only rows ticked with the checkbox in the editor (manual pick; overrides `line_numbers` and presets) |
 
 **Outputs:** \`positive_prompt\` (STRING), \`negative_prompt\` (STRING)
 
@@ -186,7 +185,7 @@ The **Presets** tab edits the \`presets\` field directly (\`presetNumber: row nu
 **Using the editor**
 
 - Click the **✎ Rows / Presets — edit** button on the node to open the dialog.
-- **Rows** tab: search box, **category filter**, **+ Add row** and **↧ Import old data**; click any card to edit its tick, category, fields, original number (#), image, order (↑/↓) or delete (🗑). With many rows the dialog renders only the visible part of the list and fills more as you scroll, so it opens instantly even for huge datasets.
+- **Rows** tab: search box, **category filter**, **+ Add row**, **↧ Import old data** and the bulk **✓ all / ✗ none** buttons (tick or untick every row in one click); click any card to edit its tick, category, fields, original number (#), image, order (↑/↓) or delete (🗑). With many rows the dialog renders only the visible part of the list and fills more as you scroll, so it opens instantly even for huge datasets.
 - Ticking a row on the node canvas itself (the checkbox at the row start) also toggles its state. Long row sets scroll right on the node with the mouse wheel or the drawn **▲ / ▼** arrows under the list.
 - **Presets** tab: type or import \`N: row numbers\` lines directly.
 - **Data file** tab: save the whole dataset (rows + presets) to a `.json` file in the node **data folder** (`ComfyUI-EasyStringNodes/data`): type a name (e.g. `artists.json`) and press **Save to file**, or click an existing file to load it. Once a file name is set, the workflow stores only that name - the rows live on disk and can be shared across workflows. The main **Save** button also rewrites the file when a name is set.
