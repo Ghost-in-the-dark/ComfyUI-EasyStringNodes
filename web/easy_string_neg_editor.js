@@ -58,7 +58,13 @@ app.registerExtension({
           }
         }
         if (!changed) return;
-        commitRows(this, st.rows); // persist into widget (or dataset file)
+        // Silent commit: frequency feedback must not bump data_rev (dataset
+        // mode) nor rewrite the rows widget (widget mode) - both would change
+        // this node's execution-cache signature and force every downstream
+        // node, including KSampler, to re-run on the next Queue even though
+        // nothing user-visible changed (a fixed seed would resample from 0).
+        // The counters still persist to the dataset file on disk.
+        commitRows(this, st.rows, { silent: true }); // counters only
         try { app.graph?.setDirtyCanvas?.(true, true); } catch (e) {}
         resizeNode(this);
       } catch (err) {

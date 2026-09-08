@@ -231,7 +231,9 @@ function hideRowsWidget(node) {
   hideTextWidget(presetsWidget(node));
   hideTextWidget(dataWidget(node));
   // data_rev is a hidden revision counter used to wake up ComfyUI's
-  // execution cache after dataset saves; never show it on the node
+  // execution cache after USER dataset edits (checkbox / dialog changes /
+  // re-sorts). Frequency feedback from onExecuted commits with silent:true and
+  // never bumps it, so a plain re-Queue with a fixed seed can hit the cache.
   hideTextWidget(revWidget(node));
 }
 
@@ -311,21 +313,43 @@ function scheduleFilePersist(node) {
   if (fileSaveTimer) clearTimeout(fileSaveTimer);
   fileSaveTimer = setTimeout(() => { fileSaveTimer = null; persistFileNow(node); }, 600);
 }
-function commitRows(node, rows) {
+function commitRows(node, rows, opts) {
   const st = state(node);
   const w = rowsWidget(node);
-  st.rows = cleanRows(rows);
-  st.raw = dumpRows(st.rows);
+  const silent = !!(opts && opts.silent); // frequency feedback, not a user edit
+  const next = cleanRows(rows);
   if (st.file) {
     // dataset mode: keep the workflow lean - data lives on disk only
     // The dataset file is the only thing that changed, so no widget value
     // differs and ComfyUI's execution cache would keep returning the previous
     // result. Bump the hidden data_rev widget immediately to make the next
     // run re-execute this node (Python ignores the value).
-    bumpDataRev(node);
+    //
+    // Silent (frequency-feedback) commits must NOT bump data_rev: bumping it
+    // after every run changes the node's input signature, so the very next
+    // Queue re-executes this node and every downstream node (incl. KSampler)
+    // even when nothing changed - a fixed seed would re-sample from scratch.
+    // Silent commits only persist the counters to disk; a disk write does not
+    // participate in the execution-cache signature.
+    st.rows = next;
+    st.raw = dumpRows(next);
+    if (!silent) bumpDataRev(node);
     scheduleFilePersist(node);
-    return st.rows.length;
+    return next.length;
   }
+  // widget mode: silent feedback updates ONLY the in-memory rows (so the new
+  // counters render) and deliberately leaves st.raw and the rows widget
+  // untouched: st.raw must keep matching the widget value or syncFromWidget()
+  // would overwrite the fresh counters with stale widget rows on the next
+  // draw. Writing the counters into the widget would change widgets_values,
+  // i.e. this node's execution-cache signature, and force a re-run of every
+  // downstream node on the next Queue (same fixed-seed problem).
+  if (silent) {
+    st.rows = next;
+    return next.length;
+  }
+  st.rows = next;
+  st.raw = dumpRows(next);
   if (w) {
     try {
       w.value = st.raw;
@@ -344,17 +368,18 @@ function commitRows(node, rows) {
   return st.rows.length;
 }
 
-function commitPresets(node, text) {
+function commitPresets(node, text, opts) {
   const st = state(node);
   const w = presetsWidget(node);
+  const silent = !!(opts && opts.silent);
   text = String(text == null ? "" : text);
   st.presets = text;
   if (st.file) {
-    bumpDataRev(node);
+    if (!silent) bumpDataRev(node);
     scheduleFilePersist(node);
     return;
   }
-  if (w) {
+  if (w && !silent) {
     try {
       w.value = text;
     } catch (e) {}

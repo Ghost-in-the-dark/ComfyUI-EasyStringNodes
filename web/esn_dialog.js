@@ -10,6 +10,7 @@ import {
   state, cleanRows, syncFromWidget, commitRows, commitPresets,
   commitDataFile, countPresets, normalizePresetText, parseOldRows,
   dsList, dsLoad, dsSave, readImageFile, RENDER_CHUNK,
+  bumpDataRev, dataWidget,
 } from "./esn_core.js";
 import {
   sortRowsByFreq, resizeNode, loadDatasetInto,
@@ -823,6 +824,14 @@ function showDialog(node, editIndex, initialTab) {
     stf.loadedFile = null;
     stf.loadFailed = false;
     loadDatasetInto(node);
+    // if this file is the node's active dataset, bump the hidden data_rev
+    // counter so the very next Queue re-executes the node (its widget inputs
+    // are unchanged - only the file on disk changed - so ComfyUI's execution
+    // cache would otherwise keep serving the stale result).
+    try {
+      const dw = dataWidget(node);
+      if (dw && String(dw.value || "").trim() === name) bumpDataRev(node);
+    } catch (e) {}
     statusText("Saved " + outRows.length + " row(s) + presets to " + res.file + ".", false);
     refreshFileList();
   }
