@@ -22,6 +22,7 @@ const NODE_CLASS = "EasyStringNegEditor";
 const ROWS_NAME = "rows";
 const PRESETS_NAME = "presets";
 const DATA_NAME = "data_file";
+const REV_NAME = "data_rev";
 const UI_NAME = "rows_list";
 const MAX_DRAWN_ROWS = 9;
 const WHEEL_STEP = 3;
@@ -180,6 +181,9 @@ function presetsWidget(node) {
 function dataWidget(node) {
   return findWidget(node, DATA_NAME);
 }
+function revWidget(node) {
+  return findWidget(node, REV_NAME);
+}
 
 function widgetRawValue(w) {
   if (!w) return "";
@@ -226,6 +230,9 @@ function hideRowsWidget(node) {
   hideTextWidget(rowsWidget(node));
   hideTextWidget(presetsWidget(node));
   hideTextWidget(dataWidget(node));
+  // data_rev is a hidden revision counter used to wake up ComfyUI's
+  // execution cache after dataset saves; never show it on the node
+  hideTextWidget(revWidget(node));
 }
 
 function syncFromWidget(node) {
@@ -276,16 +283,29 @@ let fileSaveTimer = null;
 function persistFileNow(node) {
   const st = state(node);
   if (!st.file) return;
-  if (window.__ESN_DEBUG) {
-    const onRows = st.rows.filter((r) => r && r.on !== false);
-    console.log("[ESN-persist] saving file=" + st.file + " rows=" + st.rows.length +
-      " on=true count=" + onRows.length +
-      " firstOn=" + JSON.stringify(onRows.slice(0, 3).map((r) => (r.num != null ? "#" + r.num : "?") + ":" + (r.cat || "-"))));
-  }
   dsSave(st.file, st.rows, st.presets).then((res) => {
-    if (window.__ESN_DEBUG) console.log("[ESN-persist] save result ok=" + !!(res && res.ok));
     if (!res) console.warn("EasyStringNegEditor: could not save dataset " + st.file);
   });
+}
+
+function bumpDataRev(node) {
+  try {
+    const w = revWidget(node);
+    if (!w) return;
+    const nv = (Number(w.value) || 0) + 1;
+    w.value = nv;
+    // keep the serialized widgets_values array in sync so both front-ends
+    // send the new revision when the graph is queued
+    if (node.widgets_values && Array.isArray(node.widgets_values) && node.widgets) {
+      const idx = node.widgets.indexOf(w);
+      if (idx >= 0 && idx < node.widgets_values.length) node.widgets_values[idx] = nv;
+    }
+    if (typeof w.callback === "function") {
+      try { w.callback(nv); } catch (e) {}
+    }
+  } catch (err) {
+    // best effort: never break saving because of the revision bump
+  }
 }
 function scheduleFilePersist(node) {
   if (fileSaveTimer) clearTimeout(fileSaveTimer);
@@ -298,6 +318,11 @@ function commitRows(node, rows) {
   st.raw = dumpRows(st.rows);
   if (st.file) {
     // dataset mode: keep the workflow lean - data lives on disk only
+    // The dataset file is the only thing that changed, so no widget value
+    // differs and ComfyUI's execution cache would keep returning the previous
+    // result. Bump the hidden data_rev widget immediately to make the next
+    // run re-execute this node (Python ignores the value).
+    bumpDataRev(node);
     scheduleFilePersist(node);
     return st.rows.length;
   }
@@ -325,6 +350,7 @@ function commitPresets(node, text) {
   text = String(text == null ? "" : text);
   st.presets = text;
   if (st.file) {
+    bumpDataRev(node);
     scheduleFilePersist(node);
     return;
   }
@@ -600,7 +626,7 @@ export {
   isDigits, parseRows, cleanRows, dumpRows, clampText, state,
   findWidget, rowsWidget, presetsWidget, dataWidget, widgetRawValue,
   hideTextWidget, hideRowsWidget, syncFromWidget,
-  persistFileNow, scheduleFilePersist,
+  persistFileNow, scheduleFilePersist, bumpDataRev,
   commitRows, commitPresets, commitDataFile,
   countPresets, presetEntries, presetChoice, stepPresetChoice,
   setPresetChoice, normalizePresetText,

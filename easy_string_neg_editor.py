@@ -187,6 +187,20 @@ class EasyStringNegEditor:
                                    "instead of from the widget values.",
                     },
                 ),
+                "data_rev": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 2147483647,
+                        "step": 1,
+                        "tooltip": "Hidden revision counter bumped by the front-end "
+                                   "each time the dataset file is saved, so ComfyUI "
+                                   "re-executes this node after a checkbox / edit "
+                                   "change (its widget inputs would otherwise look "
+                                   "unchanged). Ignored by this node.",
+                    },
+                ),
             },
             "optional": {
                 "preset_trigger": (
@@ -409,8 +423,8 @@ class EasyStringNegEditor:
     # ------------------------------------------------------------------
     def process(self, rows, presets="", line_numbers="", select_all=True,
                 use_preset=False, preset_line=1, select_checked=False,
-                data_file="", weight=1.0, apply_weight=True, add_break=False,
-                preset_trigger=True):
+                data_file="", data_rev=0, weight=1.0, apply_weight=True,
+                add_break=False, preset_trigger=True):
         if preset_trigger is False or preset_trigger == 0 or (
             isinstance(preset_trigger, str)
             and preset_trigger.strip().lower() in ("0", "false", "no", "off")
