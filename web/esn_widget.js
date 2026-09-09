@@ -158,18 +158,19 @@ function makeListWidget(node) {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       // centre the title in the space left of the settings switch so a long
-      // caption never runs underneath it
+      // caption never runs underneath it (the switch now sits INSIDE the
+      // header pill, near its right edge - not flush to the node border)
       const titleAreaX = 12;
-      const titleAreaW = fullW - 24 - 22; // leave room for the switch
+      const titleAreaW = fullW - 24 - 34; // leave room for the in-pill switch
       ctx.fillText(
         clampText(titleTxt, Math.max(8, Math.floor(titleAreaW / 6.2))),
         titleAreaX + titleAreaW / 2 + 6,
         y + HEADER_H / 2 + 1);
 
-      // settings switch in the top-right corner of the header: "⚙" opens the
-      // settings block, "✕" hides it again. Stored in node.properties so it
-      // survives save / reload.
-      const swX = fullW - 22;
+      // settings switch inside the header pill, near its right edge: "⚙"
+      // opens the settings block, "✕" hides it again. Stored in
+      // node.properties so it survives save / reload.
+      const swX = fullW - 32; // pill inner right edge is at fullW - 12
       const swY = y + 3;
       const swW = 14;
       const swH = HEADER_H - 10;

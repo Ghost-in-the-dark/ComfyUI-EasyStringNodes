@@ -206,33 +206,45 @@ function widgetRawValue(w) {
   }
 }
 
+// Hide a python widget (collapse of the settings block). Hiding must be
+// FULLY reversible: we snapshot exactly which sizing hooks the widget had,
+// then force a zero footprint. unhideTextWidget() restores the originals or
+// removes the hooks we invented, so a collapse → expand cycle can never leave
+// a permanent "() => 0" hook behind - that is what made every python widget
+// report ~0 px height after expanding and draw its rows on top of each other
+// (the new frontend re-runs its widget layout from these hooks every frame).
 function hideTextWidget(w) {
-  if (!w) return;
-  if (w.__esnHidden) return;
+  if (!w || w.__esnHidden) return;
   w.__esnHidden = true;
-  try {
-    w.hidden = true; // new front-end
-  } catch (e) {}
-  try {
-    w.options.hidden = true;
-  } catch (e) {}
-  try {
-    w.computedHeight = 0;
-  } catch (e) {}
-  if (typeof w.options === "object") {
-    // remember the original height callbacks so an expand can restore them
-    if (!w.__esnRestore) w.__esnRestore = {};
-    const r = w.__esnRestore;
-    if (typeof w.options.getMinHeight === "function" && !r.getMinHeight) r.getMinHeight = w.options.getMinHeight;
-    if (typeof w.options.getHeight === "function" && !r.getHeight) r.getHeight = w.options.getHeight;
-    if (typeof w.options.getMaxHeight === "function" && !r.getMaxHeight) r.getMaxHeight = w.options.getMaxHeight;
-    try { w.options.getMinHeight = () => 0; } catch (e) {}
-    try { w.options.getHeight = () => 0; } catch (e) {}
-    try { w.options.getMaxHeight = () => 0; } catch (e) {}
+  const r = w.__esnRestore || (w.__esnRestore = {});
+  // snapshot once per widget (collapse may be re-applied on every draw)
+  if (!("computeSize" in r)) {
+    r.computeSize = typeof w.computeSize === "function" ? w.computeSize : null;
+    r.computeLayoutSize = typeof w.computeLayoutSize === "function" ? w.computeLayoutSize : null;
   }
-  if (typeof w.computeSize !== "function") {
+  const o = w.options;
+  if (o && typeof o === "object") {
+    if (!("getMinHeight" in r)) r.getMinHeight = typeof o.getMinHeight === "function" ? o.getMinHeight : null;
+    if (!("getHeight" in r)) r.getHeight = typeof o.getHeight === "function" ? o.getHeight : null;
+    if (!("getMaxHeight" in r)) r.getMaxHeight = typeof o.getMaxHeight === "function" ? o.getMaxHeight : null;
+    try { o.getMinHeight = () => 0; } catch (e) {}
+    try { o.getHeight = () => 0; } catch (e) {}
+    try { o.getMaxHeight = () => 0; } catch (e) {}
+    try { o.hidden = true; } catch (e) {}
+  }
+  try { w.hidden = true; } catch (e) {} // new front-end
+  try { w.computedHeight = 0; } catch (e) {}
+  // Zero only the sizing hooks that EXISTED, so the legacy canvas front-end
+  // also collapses the block. Never add a hook the widget did not have: one
+  // invented here would survive the expand and keep the widget at ~0 px.
+  if (r.computeSize) {
     try {
       w.computeSize = function () { return [this.width || 200, 0]; };
+    } catch (e) {}
+  }
+  if (r.computeLayoutSize) {
+    try {
+      w.computeLayoutSize = function () { return { minHeight: 0, maxHeight: 0, minWidth: 0 }; };
     } catch (e) {}
   }
   const el = w.element || w.inputEl;
@@ -243,21 +255,29 @@ function hideTextWidget(w) {
   }
 }
 
-// Reverse hideTextWidget: restore the stored original visibility/height state
-// so the python widget takes part in the layout again. Idempotent: called on
-// every draw with the current collapse flag, so it no-ops once restored.
+// Reverse hideTextWidget exactly: restore the sizing hooks that existed and
+// delete the ones we invented, clear hidden, and drop the zeroed
+// computedHeight so the next layout pass gives every python row its own y
+// again (no overlap). Idempotent: called on every draw with the current
+// collapse flag, so it no-ops once restored.
 function unhideTextWidget(w) {
-  if (!w) return;
-  if (!w.__esnHidden) return;
+  if (!w || !w.__esnHidden) return;
   w.__esnHidden = false;
-  try { delete w.hidden; } catch (e) {}
+  const r = w.__esnRestore || {};
+  try { w.hidden = false; } catch (e) {}
   if (typeof w.options === "object") {
-    try { delete w.options.hidden; } catch (e) {}
-    const r = w.__esnRestore || {};
-    if (r.getMinHeight) w.options.getMinHeight = r.getMinHeight;
-    if (r.getHeight) w.options.getHeight = r.getHeight;
-    if (r.getMaxHeight) w.options.getMaxHeight = r.getMaxHeight;
+    try { w.options.hidden = false; } catch (e) {}
+    if (r.getMinHeight != null) { try { w.options.getMinHeight = r.getMinHeight; } catch (e) {} }
+    else { try { delete w.options.getMinHeight; } catch (e) {} }
+    if (r.getHeight != null) { try { w.options.getHeight = r.getHeight; } catch (e) {} }
+    else { try { delete w.options.getHeight; } catch (e) {} }
+    if (r.getMaxHeight != null) { try { w.options.getMaxHeight = r.getMaxHeight; } catch (e) {} }
+    else { try { delete w.options.getMaxHeight; } catch (e) {} }
   }
+  if (r.computeSize != null) { try { w.computeSize = r.computeSize; } catch (e) {} }
+  else { try { delete w.computeSize; } catch (e) {} }
+  if (r.computeLayoutSize != null) { try { w.computeLayoutSize = r.computeLayoutSize; } catch (e) {} }
+  else { try { delete w.computeLayoutSize; } catch (e) {} }
   try { delete w.computedHeight; } catch (e) {}
   const el = w.element || w.inputEl;
   if (el && el.style) {
