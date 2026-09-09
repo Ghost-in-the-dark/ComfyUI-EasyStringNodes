@@ -14,7 +14,7 @@ import {
   FREQ_W, SB_W, MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
 } from "./esn_core.js";
 import {
-  rowCount, rebuildView, toggleFreqSort, tickVisibleRows, listHeight, resizeNode,
+  rowCount, rebuildView, toggleFreqSort, toggleOnlyChecked, tickVisibleRows, listHeight, resizeNode,
 } from "./esn_view.js";
 import { focusSearch, clearSearch } from "./esn_search.js";
 import { openEditor } from "./esn_dialog.js";
@@ -208,26 +208,29 @@ function makeListWidget(node) {
       ctx.restore();
       ry += SEARCH_H;
 
-      // --- toolbar: ✓ all / ✗ none / ⇅ by use ---------------------------
+      // --- toolbar: ✓ all / ✗ none / ☑ only / ⇅ by use ------------------
       // Bulk-tick buttons act on ALL rows, or - when an on-node search filter
       // is active - only on the rows matching it (the count suffix shows how
       // many rows the buttons would touch). The sort toggle mirrors the old
       // header ⇅ control, but as a readable labelled button that lights up
-      // while the frequency order is active.
+      // while the frequency order is active. "☑ only" is a view filter that
+      // shows only the ticked rows (combines with the search, AND).
       ctx.save();
       const tbY = ry + 2;
       const tbH = TOOL_H - 4;
       const tGap = 4;
-      const tbW = (fullW - 24 - tGap * 2) / 3;
+      const tbW = (fullW - 24 - tGap * 3) / 4;
       const visCount = st.view ? st.view.length : 0;
-      const qActive = !!(st.search || "").trim();
+      const filterActive = !!(st.search || "").trim() || !!st.onlyChecked;
       const canSort = (rowCount(n) || st.rows.length) > 1;
-      // ✓ all / ✗ none / ⇅ by use. While a search filter is active the tick
-      // buttons carry the number of rows they would touch (the matches).
+      // ✓ all / ✗ none / ☑ only / ⇅ by use. While a search or the "☑ only"
+      // filter is active the tick buttons carry the number of rows they
+      // would touch.
       const tbs = [
-        { key: "tick", label: "✓ all" + (qActive ? " " + visCount : ""), on: false },
-        { key: "none", label: "✗ none" + (qActive ? " " + visCount : ""), on: false },
-        { key: "sort", label: "⇅ by use", on: !!st.sortedByFreq, enabled: canSort },
+        { key: "tick", label: "✓ all" + (filterActive ? " " + visCount : ""), on: false },
+        { key: "none", label: "✗ none" + (filterActive ? " " + visCount : ""), on: false },
+        { key: "only", label: "☑ only", on: !!st.onlyChecked },
+        { key: "sort", label: "⇅ use", on: !!st.sortedByFreq, enabled: canSort },
       ];
       const tz = {};
       for (let bi = 0; bi < tbs.length; bi++) {
@@ -252,7 +255,7 @@ function makeListWidget(node) {
         ctx.globalAlpha = 1;
       }
       ctx.restore();
-      st.toolbarBtns = { y: ry, h: TOOL_H, tick: tz.tick, none: tz.none, sort: tz.sort };
+      st.toolbarBtns = { y: ry, h: TOOL_H, tick: tz.tick, none: tz.none, only: tz.only, sort: tz.sort };
       ry += TOOL_H;
 
       ctx.save();
@@ -363,7 +366,13 @@ function makeListWidget(node) {
           ctx.fillStyle = "rgba(255,255,255,0.25)";
           ctx.font = "10px sans-serif";
           ctx.textAlign = "center";
-          ctx.fillText(st.search ? "(no rows match “" + clampText(st.search, 22) + "”)" : "(no rows yet - click the header to add)", cx, ry + 12);
+          ctx.fillText(
+            st.search
+              ? "(no rows match “" + clampText(st.search, 22) + "”)"
+              : (st.onlyChecked
+                  ? "(no ticked rows - tick rows or turn off ☑ only)"
+                  : "(no rows yet - click the header to add)"),
+            cx, ry + 12);
           rowsBottom = ry + 18;
         }
       }
@@ -508,6 +517,7 @@ function makeListWidget(node) {
         const hit = (z) => z && x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h;
         if (hit(tb.tick)) { tickVisibleRows(node, true); return true; }
         if (hit(tb.none)) { tickVisibleRows(node, false); return true; }
+        if (hit(tb.only)) { toggleOnlyChecked(node); return true; }
         if (hit(tb.sort)) { toggleFreqSort(node); return true; }
         return false; // gap between toolbar buttons: let it fall through
       }

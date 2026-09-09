@@ -13,7 +13,7 @@ import {
   bumpDataRev, dataWidget,
 } from "./esn_core.js";
 import {
-  sortRowsByFreq, resizeNode, loadDatasetInto,
+  sortRowsByFreq, sortRowsByNum, resizeNode, loadDatasetInto,
 } from "./esn_view.js";
 import { blurActiveSearch } from "./esn_search.js";
 
@@ -397,6 +397,13 @@ function showDialog(node, editIndex, initialTab) {
     for (const r of ordered) rows.push(r);
     applyFilter();
   });
+  const sortNumB = mkBtn("↺ # order", { pad: "5px 9px", font: "12px", title: "Restore the original order by the row number (#) - undoes a frequency sort" });
+  sortNumB.addEventListener("click", () => {
+    const ordered = sortRowsByNum(rows);
+    rows.length = 0;
+    for (const r of ordered) rows.push(r);
+    applyFilter();
+  });
   // category filter: built from all row cats; '' = all
   const catSel = document.createElement("select");
   const allOpt = document.createElement("option");
@@ -427,6 +434,7 @@ function showDialog(node, editIndex, initialTab) {
   toolbar.appendChild(checkAllB);
   toolbar.appendChild(uncheckAllB);
   toolbar.appendChild(sortFreqB);
+  toolbar.appendChild(sortNumB);
   rowsPanel.appendChild(toolbar);
 
   const hintEl = document.createElement("div");

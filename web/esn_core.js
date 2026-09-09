@@ -134,13 +134,13 @@ function state(node) {
       presets: "",
       search: "", // active filter text (typed in the on-node search bar)
       searchFocus: false, // is the on-node search field focused?
-      view: [], // [{row, oi}] rows matching st.search (oi = index in st.rows)
+      onlyChecked: false, // view filter: show only ticked (on=true) rows
+      view: [], // [{row, oi}] rows matching st.search + onlyChecked (oi = index in st.rows)
       draggingSb: false, // dragging the rows scrollbar thumb
       sbStartY: 0, sbStartNodeY: 0, sbStartClientY: 0, sbScale: 1, sbGrabOffset: 0, sbZone: null,
       sortBtn: null, // header sort control hit zone (unused; kept for compat)
-      sortedByFreq: false,
-      freqOrderBackup: null, // pre-sort order for the header toggle
-      toolbarBtns: null, // {tick,none,sort} hit zones of the toolbar row
+      sortedByFreq: false, // view-only flag: draw rows by usage frequency
+      toolbarBtns: null, // {tick,none,only,sort} hit zones of the toolbar row
       // per-row node-local rects set during draw
       rects: [],
       widgetY: 0,
