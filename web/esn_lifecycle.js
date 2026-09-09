@@ -10,6 +10,7 @@ import { app } from "../../scripts/app.js";
 import {
   state, rowsWidget, presetsWidget, widgetRawValue,
   hideRowsWidget, syncFromWidget,
+  settingsCollapsed, applySettingsCollapsed,
   NODE_CLASS, UI_NAME,
 } from "./esn_core.js";
 import { resizeNode, loadDatasetInto } from "./esn_view.js";
@@ -59,6 +60,7 @@ function setupNode(node) {
     // already added (e.g. reconfigure) — just refresh
     node.__esnSetupDone = true;
     hideRowsWidget(node);
+    applySettingsCollapsed(node, settingsCollapsed(node));
     syncFromWidget(node);
     clearWidgetValuesForFileMode(node);
     loadDatasetInto(node);
@@ -66,6 +68,7 @@ function setupNode(node) {
   }
   node.__esnSetupDone = true;
   hideRowsWidget(node);
+  applySettingsCollapsed(node, settingsCollapsed(node));
   syncFromWidget(node);
   clearWidgetValuesForFileMode(node);
   loadDatasetInto(node);
@@ -87,6 +90,7 @@ function setupNode(node) {
 
 function refreshNode(node) {
   if (!node || node.type !== NODE_CLASS) return;
+  applySettingsCollapsed(node, settingsCollapsed(node));
   syncFromWidget(node);
   loadDatasetInto(node);
   resizeNode(node);

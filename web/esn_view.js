@@ -7,8 +7,10 @@
 import { app } from "../../scripts/app.js";
 import {
   state, cleanRows, commitRows, presetEntries, dsLoad, dumpRows,
+  ROWS_NAME, PRESETS_NAME, DATA_NAME, REV_NAME,
   MAX_DRAWN_ROWS, ROW_H, HEADER_H, SEARCH_H, TOOL_H,
   MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
+  settingsCollapsed, ADV_WIDGETS,
 } from "./esn_core.js";
 
 
@@ -160,10 +162,29 @@ function resizeNode(node) {
     if (!node.size) node.size = [220, 100];
     let w = node.size[0] || 220;
     if (w < 220) w = 220;
-    // rough total: python widgets above (default 26px each) + our list
-    const py = (node.widgets ? node.widgets.length - 1 : 0) * 26;
-    const h = Math.max(node.size[1] || 100, py + listHeight(node));
-    node.size = [w, h];
+    // Rough vertical space taken by the python widgets above the list.
+    // Keep the same heuristic as before for the expanded state (every python
+    // widget row except the always-hidden rows/presets/data/data_rev and the
+    // forceInput preset_trigger contributes ~26px), so a workflow that never
+    // uses the collapse feature keeps its exact previous node height. When
+    // the settings block is collapsed, its widgets (line_numbers …
+    // select_checked) contribute nothing and only the hidden data widgets
+    // remain above the list.
+    const collapsed = settingsCollapsed(node);
+    let py = 0;
+    if (node.widgets) {
+      for (const wdg of node.widgets) {
+        if (!wdg || wdg.name === UI_NAME) continue;
+        const nm = wdg.name;
+        if (nm === ROWS_NAME || nm === PRESETS_NAME ||
+            nm === DATA_NAME || nm === REV_NAME || nm === "preset_trigger") continue;
+        if (collapsed && ADV_WIDGETS.indexOf(nm) !== -1) continue;
+        py += 26;
+      }
+    }
+    const target = py + listHeight(node);
+    // always write the exact height so collapsing/expanding can shrink too
+    node.size = [w, Math.max(80, target)];
   } catch (e) {}
   try {
     app.graph?.setDirtyCanvas?.(true, true);

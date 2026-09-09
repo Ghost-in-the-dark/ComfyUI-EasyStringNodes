@@ -10,6 +10,7 @@ import {
   state, clampText, findWidget, hideRowsWidget, syncFromWidget,
   commitRows, countPresets, presetEntries, presetChoice,
   stepPresetChoice, UI_NAME,
+  settingsCollapsed, applySettingsCollapsed, toggleSettingsCollapsed,
   MAX_DRAWN_ROWS, WHEEL_STEP, ROW_H, HEADER_H, SEARCH_H, TOOL_H,
   FREQ_W, SB_W, MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
 } from "./esn_core.js";
@@ -126,6 +127,9 @@ function makeListWidget(node) {
       if (syncFromWidget(n)) {
         resizeNode(n);
       }
+      // keep the collapse state in sync on every draw (a reloaded workflow
+      // carries the property; the widgets may have just been (re)created)
+      applySettingsCollapsed(n, settingsCollapsed(n));
       st.widgetY = y;
       st.widgetH = this.computeSize()[1];
       const fullW = width || 220;
@@ -153,7 +157,38 @@ function makeListWidget(node) {
       ctx.font = "bold 12px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(clampText(titleTxt, Math.max(8, Math.floor((fullW - 24) / 6.2))), 12 + (fullW - 24) / 2, y + HEADER_H / 2 + 1);
+      // centre the title in the space left of the settings switch so a long
+      // caption never runs underneath it
+      const titleAreaX = 12;
+      const titleAreaW = fullW - 24 - 22; // leave room for the switch
+      ctx.fillText(
+        clampText(titleTxt, Math.max(8, Math.floor(titleAreaW / 6.2))),
+        titleAreaX + titleAreaW / 2 + 6,
+        y + HEADER_H / 2 + 1);
+
+      // settings switch in the top-right corner of the header: "⚙" opens the
+      // settings block, "✕" hides it again. Stored in node.properties so it
+      // survives save / reload.
+      const swX = fullW - 22;
+      const swY = y + 3;
+      const swW = 14;
+      const swH = HEADER_H - 10;
+      const swOn = !settingsCollapsed(n);
+      st.settingsBtn = { x: swX - 4, y: y, w: swW + 8, h: HEADER_H };
+      ctx.save();
+      ctx.fillStyle = swOn ? "rgba(120,120,255,0.25)" : "rgba(120,120,120,0.2)";
+      ctx.strokeStyle = swOn ? "#79c" : "rgba(255,255,255,0.35)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(swX, swY, swW, swH, [4]);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = swOn ? "#cfe" : "rgba(255,255,255,0.55)";
+      ctx.font = "bold 9px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(swOn ? "⚙" : "✕", swX + swW / 2, swY + swH / 2 + 0.5);
+      ctx.restore();
       ctx.restore();
 
       // rows
@@ -494,8 +529,14 @@ function makeListWidget(node) {
       const x = pos[0];
       const y = pos[1];
       const st = state(node);
-      // header → add/edit
+      // header → add/edit, except the settings switch in its corner
       if (y >= st.widgetY - 1 && y <= st.widgetY + HEADER_H) {
+        const sw = st.settingsBtn;
+        if (sw && x >= sw.x && x <= sw.x + sw.w && y >= sw.y && y <= sw.y + sw.h) {
+          toggleSettingsCollapsed(node);
+          resizeNode(node);
+          return true;
+        }
         openEditor(node, null);
         return true;
       }

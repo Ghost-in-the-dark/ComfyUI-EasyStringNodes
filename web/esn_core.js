@@ -24,6 +24,14 @@ const PRESETS_NAME = "presets";
 const DATA_NAME = "data_file";
 const REV_NAME = "data_rev";
 const UI_NAME = "rows_list";
+// Python widgets of the "top settings" block above the row list that can be
+// collapsed as one group with the settings switch in the list header.
+// preset_trigger is a forceInput (node-input socket) widget, not part of the
+// vertical body stack, so it is left visible on purpose.
+const ADV_WIDGETS = [
+  "line_numbers", "select_all", "use_preset", "preset_line",
+  "weight", "apply_weight", "add_break", "select_checked",
+];
 const MAX_DRAWN_ROWS = 8; // rows visible on the node (toolbar row above takes 22 px)
 const WHEEL_STEP = 3;
 const PRESET_WHEEL_STEP = 2; // wheel notches per preset-list scroll
@@ -141,6 +149,8 @@ function state(node) {
       sortBtn: null, // header sort control hit zone (unused; kept for compat)
       sortedByFreq: false, // view-only flag: draw rows by usage frequency
       toolbarBtns: null, // {tick,none,only,sort} hit zones of the toolbar row
+      settingsHidden: false, // is the python settings block (line_numbers …) collapsed?
+      settingsBtn: null, // header settings-switch hit zone
       // per-row node-local rects set during draw
       rects: [],
       widgetY: 0,
@@ -210,6 +220,12 @@ function hideTextWidget(w) {
     w.computedHeight = 0;
   } catch (e) {}
   if (typeof w.options === "object") {
+    // remember the original height callbacks so an expand can restore them
+    if (!w.__esnRestore) w.__esnRestore = {};
+    const r = w.__esnRestore;
+    if (typeof w.options.getMinHeight === "function" && !r.getMinHeight) r.getMinHeight = w.options.getMinHeight;
+    if (typeof w.options.getHeight === "function" && !r.getHeight) r.getHeight = w.options.getHeight;
+    if (typeof w.options.getMaxHeight === "function" && !r.getMaxHeight) r.getMaxHeight = w.options.getMaxHeight;
     try { w.options.getMinHeight = () => 0; } catch (e) {}
     try { w.options.getHeight = () => 0; } catch (e) {}
     try { w.options.getMaxHeight = () => 0; } catch (e) {}
@@ -224,6 +240,30 @@ function hideTextWidget(w) {
     try { el.style.display = "none"; } catch (e) {}
     try { el.hidden = true; } catch (e) {}
     try { el.style.pointerEvents = "none"; } catch (e) {}
+  }
+}
+
+// Reverse hideTextWidget: restore the stored original visibility/height state
+// so the python widget takes part in the layout again. Idempotent: called on
+// every draw with the current collapse flag, so it no-ops once restored.
+function unhideTextWidget(w) {
+  if (!w) return;
+  if (!w.__esnHidden) return;
+  w.__esnHidden = false;
+  try { delete w.hidden; } catch (e) {}
+  if (typeof w.options === "object") {
+    try { delete w.options.hidden; } catch (e) {}
+    const r = w.__esnRestore || {};
+    if (r.getMinHeight) w.options.getMinHeight = r.getMinHeight;
+    if (r.getHeight) w.options.getHeight = r.getHeight;
+    if (r.getMaxHeight) w.options.getMaxHeight = r.getMaxHeight;
+  }
+  try { delete w.computedHeight; } catch (e) {}
+  const el = w.element || w.inputEl;
+  if (el && el.style) {
+    try { el.style.display = ""; } catch (e) {}
+    try { el.hidden = false; } catch (e) {}
+    try { el.style.pointerEvents = ""; } catch (e) {}
   }
 }
 
@@ -412,6 +452,38 @@ function commitDataFile(node, text) {
       try { w.callback(text); } catch (e) {}
     }
   }
+}
+
+// The python widget block above the row list (line_numbers / select_all /
+// use_preset / preset_line / weight / apply_weight / add_break /
+// select_checked) can be collapsed with one settings switch in the list
+// header. Whether it is collapsed is view state that must survive a workflow
+// save / load, so it lives on node.properties, not in node.__esn.
+function settingsCollapsed(node) {
+  return !!(node && node.properties && node.properties.__esnSettingsCollapsed);
+}
+
+// Toggle the whole python settings block (hide every widget when collapsing,
+// restore default visibility when expanding). Called by the header switch and
+// once at the start of draw() so a workflow reloaded with the property set
+// collapses the block even before the user touches the switch.
+function applySettingsCollapsed(node, collapsed) {
+  if (!node || !node.widgets) return;
+  try {
+    if (!node.properties) node.properties = {};
+    node.properties.__esnSettingsCollapsed = !!collapsed;
+  } catch (e) {}
+  for (const w of node.widgets) {
+    if (!w || ADV_WIDGETS.indexOf(w.name) === -1) continue;
+    if (collapsed) hideTextWidget(w);
+    else unhideTextWidget(w);
+  }
+}
+
+function toggleSettingsCollapsed(node) {
+  applySettingsCollapsed(node, !settingsCollapsed(node));
+  // the caller (esn_widget.js) triggers resizeNode after the toggle
+  try { app.graph?.setDirtyCanvas?.(true, true); } catch (e) {}
 }
 
 function countPresets(text) {
@@ -643,7 +715,8 @@ async function readImageFile(file) {
 export {
   app,
   // widget/column names
-  NODE_CLASS, ROWS_NAME, PRESETS_NAME, DATA_NAME, UI_NAME,
+  NODE_CLASS, ROWS_NAME, PRESETS_NAME, DATA_NAME, REV_NAME, UI_NAME,
+  ADV_WIDGETS,
   // layout constants
   MAX_DRAWN_ROWS, WHEEL_STEP, PRESET_WHEEL_STEP, RENDER_CHUNK,
   ROW_H, HEADER_H, SEARCH_H, FREQ_W, SB_W,
@@ -653,9 +726,10 @@ export {
   // helpers
   isDigits, parseRows, cleanRows, dumpRows, clampText, state,
   findWidget, rowsWidget, presetsWidget, dataWidget, widgetRawValue,
-  hideTextWidget, hideRowsWidget, syncFromWidget,
+  hideTextWidget, unhideTextWidget, hideRowsWidget, syncFromWidget,
   persistFileNow, scheduleFilePersist, bumpDataRev,
   commitRows, commitPresets, commitDataFile,
+  settingsCollapsed, applySettingsCollapsed, toggleSettingsCollapsed,
   countPresets, presetEntries, presetChoice, stepPresetChoice,
   setPresetChoice, normalizePresetText,
   parseOldLine, parseOldRows, indexOfTopLevelDash,
