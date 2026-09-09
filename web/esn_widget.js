@@ -10,11 +10,11 @@ import {
   state, clampText, findWidget, hideRowsWidget, syncFromWidget,
   commitRows, countPresets, presetEntries, presetChoice,
   stepPresetChoice, UI_NAME,
-  MAX_DRAWN_ROWS, WHEEL_STEP, ROW_H, HEADER_H, SEARCH_H,
+  MAX_DRAWN_ROWS, WHEEL_STEP, ROW_H, HEADER_H, SEARCH_H, TOOL_H,
   FREQ_W, SB_W, MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
 } from "./esn_core.js";
 import {
-  rowCount, rebuildView, toggleFreqSort, listHeight, resizeNode,
+  rowCount, rebuildView, toggleFreqSort, tickVisibleRows, listHeight, resizeNode,
 } from "./esn_view.js";
 import { focusSearch, clearSearch } from "./esn_search.js";
 import { openEditor } from "./esn_dialog.js";
@@ -149,22 +149,11 @@ function makeListWidget(node) {
       const failed = st.file && st.loadedFile !== st.file && st.loadFailed;
       const totalShown = st.view ? st.view.length : rowCount(n);
       const titleTxt = failed ? "✎ dataset " + st.file + " not found — edit" : (loading ? "✎ dataset " + st.file + " — loading…" : "✎ Rows (" + totalShown + (st.search ? "/" + rowCount(n) : "") + ") / Presets (" + pCount + ") — edit");
-      // sort-by-frequency toggle on the right edge of the header
-      const sortX = fullW - 34;
-      const sortY = y + 3;
-      const sortW = 22;
-      const sortH = HEADER_H - 6;
-      st.sortBtn = { x: sortX, y: sortY, w: sortW, h: sortH };
-      const canSort = (rowCount(n) || st.rows.length) > 1;
-      ctx.textAlign = "right";
-      ctx.font = "bold 11px sans-serif";
-      ctx.fillStyle = canSort ? (st.sortedByFreq ? "#ffcc66" : "rgba(255,255,255,0.6)") : "rgba(255,255,255,0.18)";
-      ctx.fillText("⇅", sortX + sortW - 8, y + HEADER_H / 2 + 1);
-      ctx.textAlign = "center";
-      // title, squeezed so it doesn't overlap the sort control
+      ctx.fillStyle = "#cfc";
       ctx.font = "bold 12px sans-serif";
-      const titleMax = fullW - 24 - 42;
-      ctx.fillText(clampText(titleTxt, Math.max(8, Math.floor(titleMax / 6.2))), 12 + (fullW - 24) / 2, y + HEADER_H / 2 + 1);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(clampText(titleTxt, Math.max(8, Math.floor((fullW - 24) / 6.2))), 12 + (fullW - 24) / 2, y + HEADER_H / 2 + 1);
       ctx.restore();
 
       // rows
@@ -218,6 +207,53 @@ function makeListWidget(node) {
       }
       ctx.restore();
       ry += SEARCH_H;
+
+      // --- toolbar: ✓ all / ✗ none / ⇅ by use ---------------------------
+      // Bulk-tick buttons act on ALL rows, or - when an on-node search filter
+      // is active - only on the rows matching it (the count suffix shows how
+      // many rows the buttons would touch). The sort toggle mirrors the old
+      // header ⇅ control, but as a readable labelled button that lights up
+      // while the frequency order is active.
+      ctx.save();
+      const tbY = ry + 2;
+      const tbH = TOOL_H - 4;
+      const tGap = 4;
+      const tbW = (fullW - 24 - tGap * 2) / 3;
+      const visCount = st.view ? st.view.length : 0;
+      const qActive = !!(st.search || "").trim();
+      const canSort = (rowCount(n) || st.rows.length) > 1;
+      // ✓ all / ✗ none / ⇅ by use. While a search filter is active the tick
+      // buttons carry the number of rows they would touch (the matches).
+      const tbs = [
+        { key: "tick", label: "✓ all" + (qActive ? " " + visCount : ""), on: false },
+        { key: "none", label: "✗ none" + (qActive ? " " + visCount : ""), on: false },
+        { key: "sort", label: "⇅ by use", on: !!st.sortedByFreq, enabled: canSort },
+      ];
+      const tz = {};
+      for (let bi = 0; bi < tbs.length; bi++) {
+        const b = tbs[bi];
+        const bx = 12 + bi * (tbW + tGap);
+        tz[b.key] = { x: bx, y: tbY, w: tbW, h: tbH };
+        const on = !!b.on;
+        const enabled = b.enabled !== false;
+        ctx.fillStyle = on ? "rgba(120,90,20,0.5)" : "rgba(255,255,255,0.07)";
+        ctx.strokeStyle = on ? "rgba(255,200,80,0.75)" : (enabled ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.1)");
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = enabled ? 1 : 0.45;
+        ctx.beginPath();
+        ctx.roundRect(bx, tbY, tbW, tbH, [4]);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = on ? "#ffd873" : (b.key === "sort" ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.85)");
+        ctx.font = "9px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(clampText(b.label, Math.max(4, Math.floor(tbW / 5.2) - 2)), bx + tbW / 2, tbY + tbH / 2 + 0.5);
+        ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+      st.toolbarBtns = { y: ry, h: TOOL_H, tick: tz.tick, none: tz.none, sort: tz.sort };
+      ry += TOOL_H;
 
       ctx.save();
       for (let i = 0; i < shown; i++) {
@@ -309,7 +345,7 @@ function makeListWidget(node) {
 
         // drag scrollbar on the right edge of the drawn rows
         const sbX = fullW - SB_W - 4;
-        const sbY = searchBot + 1;
+        const sbY = (st.toolbarBtns ? st.toolbarBtns.y + st.toolbarBtns.h : searchBot) + 1;
         const sbH = rowsBottom - sbY - 1;
         if (sbH > 24 && shown > 0) {
           const trackH = sbH;
@@ -449,12 +485,6 @@ function makeListWidget(node) {
       const x = pos[0];
       const y = pos[1];
       const st = state(node);
-      // header sort-by-frequency toggle (right edge)
-      if (st.sortBtn && x >= st.sortBtn.x && x <= st.sortBtn.x + st.sortBtn.w &&
-          y >= st.sortBtn.y && y <= st.sortBtn.y + st.sortBtn.h) {
-        toggleFreqSort(node);
-        return true;
-      }
       // header → add/edit
       if (y >= st.widgetY - 1 && y <= st.widgetY + HEADER_H) {
         openEditor(node, null);
@@ -471,6 +501,15 @@ function makeListWidget(node) {
         }
         focusSearch(node);
         return true;
+      }
+      // toolbar buttons: ✓ all / ✗ none (search-aware) and ⇅ by use
+      const tb = st.toolbarBtns;
+      if (tb && y >= tb.y - 1 && y <= tb.y + tb.h + 1) {
+        const hit = (z) => z && x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h;
+        if (hit(tb.tick)) { tickVisibleRows(node, true); return true; }
+        if (hit(tb.none)) { tickVisibleRows(node, false); return true; }
+        if (hit(tb.sort)) { toggleFreqSort(node); return true; }
+        return false; // gap between toolbar buttons: let it fall through
       }
       // rows scrollbar drag (pointer grab anywhere on the track)
       const viewRows = st.view.length;

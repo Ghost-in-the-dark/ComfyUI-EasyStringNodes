@@ -10,7 +10,7 @@ import { app } from "../../scripts/app.js";
 import {
   state, presetEntries, NODE_CLASS,
   MAX_DRAWN_ROWS, WHEEL_STEP, PRESET_WHEEL_STEP,
-  HEADER_H, SEARCH_H, MAX_DRAWN_PRESETS,
+  HEADER_H, SEARCH_H, TOOL_H, MAX_DRAWN_PRESETS,
 } from "./esn_core.js";
 import { isDialogOpen } from "./esn_dialog.js";
 
@@ -243,8 +243,10 @@ function installHover() {
         const viewRows = st0.view ? st0.view.length : st0.rows.length;
         const maxRowScroll = viewRows - MAX_DRAWN_ROWS;
         if (maxRowScroll > 0 && st0.rowsAreaBottom) {
-          const rowsTop = (st0.searchZone && st0.searchZone.bottom) ? st0.searchZone.bottom : st0.widgetY + HEADER_H + SEARCH_H;
-          // stop at the scroll hint row so the ▲/▼ arrows keep working
+          // rows begin below the search bar AND the button toolbar; the band
+          // stops at the scroll hint row so the ▲/▼ arrows keep working
+          let rowsTop = st0.widgetY + HEADER_H + SEARCH_H + TOOL_H;
+          if (st0.toolbarBtns) rowsTop = st0.toolbarBtns.y + st0.toolbarBtns.h;
           const rowsBottom = st0.rowsAreaBottom - 18;
           if (ly > rowsTop && ly < rowsBottom && lx > 0 && lx < size[0]) {
             if (delta !== 0) {

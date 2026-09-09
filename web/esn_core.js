@@ -24,7 +24,7 @@ const PRESETS_NAME = "presets";
 const DATA_NAME = "data_file";
 const REV_NAME = "data_rev";
 const UI_NAME = "rows_list";
-const MAX_DRAWN_ROWS = 9;
+const MAX_DRAWN_ROWS = 8; // rows visible on the node (toolbar row above takes 22 px)
 const WHEEL_STEP = 3;
 const PRESET_WHEEL_STEP = 2; // wheel notches per preset-list scroll
 const RENDER_CHUNK = 60;
@@ -32,6 +32,7 @@ const RENDER_CHUNK = 60;
 const ROW_H = 20; // px per drawn row
 const HEADER_H = 24;
 const SEARCH_H = 20; // px of the always-visible search bar below the header
+const TOOL_H = 22; // px of the button toolbar below the search bar (✓ all / ✗ none / ⇅ by use)
 const FREQ_W = 26; // px reserved on the right of a row for the usage counter
 const SB_W = 9; // scrollbar track width for the rows list
 // presets section drawn below the row list on the node canvas
@@ -136,9 +137,10 @@ function state(node) {
       view: [], // [{row, oi}] rows matching st.search (oi = index in st.rows)
       draggingSb: false, // dragging the rows scrollbar thumb
       sbStartY: 0, sbStartNodeY: 0, sbStartClientY: 0, sbScale: 1, sbGrabOffset: 0, sbZone: null,
-      sortBtn: null, // header sort control hit zone
+      sortBtn: null, // header sort control hit zone (unused; kept for compat)
       sortedByFreq: false,
       freqOrderBackup: null, // pre-sort order for the header toggle
+      toolbarBtns: null, // {tick,none,sort} hit zones of the toolbar row
       // per-row node-local rects set during draw
       rects: [],
       widgetY: 0,
@@ -646,6 +648,7 @@ export {
   MAX_DRAWN_ROWS, WHEEL_STEP, PRESET_WHEEL_STEP, RENDER_CHUNK,
   ROW_H, HEADER_H, SEARCH_H, FREQ_W, SB_W,
   MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
+  TOOL_H,
   IMG_MAX_EDGE, IMG_QUALITY, NL, CR,
   // helpers
   isDigits, parseRows, cleanRows, dumpRows, clampText, state,

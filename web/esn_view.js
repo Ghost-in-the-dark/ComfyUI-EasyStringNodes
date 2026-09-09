@@ -7,7 +7,7 @@
 import { app } from "../../scripts/app.js";
 import {
   state, cleanRows, commitRows, presetEntries, dsLoad, dumpRows,
-  MAX_DRAWN_ROWS, ROW_H, HEADER_H, SEARCH_H,
+  MAX_DRAWN_ROWS, ROW_H, HEADER_H, SEARCH_H, TOOL_H,
   MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
 } from "./esn_core.js";
 
@@ -46,6 +46,36 @@ function sortRowsByFreq(rows) {
   return withIdx.map((x) => x.row);
 }
 
+// Tick (on=true) or untick (on=false) every row currently visible in the
+// on-node list. With an active search filter only the rows matching it are
+// touched (like the dialog's ✓ all / ✗ none, but search-aware on the node);
+// without a filter the whole set is changed.
+function tickVisibleRows(node, on) {
+  const st = state(node);
+  const rows = st.rows;
+  if (!rows || !rows.length) return 0;
+  // With an active search filter the buttons act on the rows matching it
+  // (even when that set is empty - a no-op); without a filter, on the whole
+  // set. st.view holds the matches, so it must not be silently replaced by
+  // the full list when a search yields nothing.
+  const q = (st.search || "").trim();
+  const targets = q ? (st.view || []) : rows.map((row, oi) => ({ row, oi }));
+  let n = 0;
+  for (const t of targets) {
+    const row = rows[t.oi];
+    if (row && row.on !== !!on) {
+      row.on = !!on;
+      n++;
+    }
+  }
+  if (!n) return 0;
+  commitRows(node, rows); // dataset-aware (file vs widget) + bumps data_rev on user edits
+  if (st.search) { st.scroll = 0; }
+  app.graph?.setDirtyCanvas?.(true, true);
+  resizeNode(node);
+  return n;
+}
+
 function toggleFreqSort(node) {
   const st = state(node);
   const rows = st.rows;
@@ -74,7 +104,7 @@ function listHeight(node) {
   const st = state(node);
   const total = rowCount(node);
   const n = Math.min(total, MAX_DRAWN_ROWS);
-  let h = HEADER_H + SEARCH_H + n * ROW_H;
+  let h = HEADER_H + SEARCH_H + TOOL_H + n * ROW_H;
   if (total > MAX_DRAWN_ROWS || n === 0) h += 18; // scroll hint / "no rows"
   const entries = presetEntries(st.presets);
   const nP = Math.min(entries.length, MAX_DRAWN_PRESETS);
@@ -137,6 +167,6 @@ function loadDatasetInto(node) {
 
 export {
   rowCount, rowSearchText, rebuildView,
-  sortRowsByFreq, toggleFreqSort, listHeight,
+  sortRowsByFreq, toggleFreqSort, tickVisibleRows, listHeight,
   resizeNode, loadDatasetInto,
 };
