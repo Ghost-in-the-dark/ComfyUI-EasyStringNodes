@@ -331,10 +331,8 @@ class EasyStringNegEditor:
                 return p["content"]
         if 1 <= preset_line <= len(presets):
             return presets[preset_line - 1]["content"]
-        raise ValueError(
-            f"EasyStringNegEditor: preset {preset_line} not found "
-            f"({len(presets)} preset(s) defined in the Presets tab)."
-        )
+        # preset not found -> treat it as an empty selection (no rows chosen)
+        return None
 
     @staticmethod
     def _resolve_row_number(rows, number):
@@ -354,38 +352,23 @@ class EasyStringNegEditor:
                 "rows' on the node to create rows."
             )
         if select_checked:
-            checked = [r for r in rows if r["on"]]
-            if not checked:
-                raise ValueError(
-                    "EasyStringNegEditor: 'select_checked' is on but no "
-                    "row is ticked - tick rows in the editor (checkbox)."
-                )
-            return checked
+            # manual checkbox pick: only the ticked rows, or nothing at all
+            # (an empty choice is a valid "no rows" result, not a crash)
+            return [r for r in rows if r["on"]]
         if select_all:
             return rows
         numbers = parse_spec(line_numbers)
         if not numbers:
             # select_all off and no explicit row numbers: use the rows that are
             # ticked with the checkbox (manual pick without needing the
-            # select_checked toggle)
-            checked = [r for r in rows if r["on"]]
-            if not checked:
-                raise ValueError(
-                    "EasyStringNegEditor: 'select_all' is off, 'line_numbers' "
-                    "is empty and no row is ticked - either enter row numbers "
-                    "in 'line_numbers' or tick rows in the editor (checkbox)."
-                )
-            return checked
+            # select_checked toggle); none ticked -> empty output
+            return [r for r in rows if r["on"]]
         chosen = []
         for n in numbers:
             row = self._resolve_row_number(rows, n)
             if row is not None:
                 chosen.append(row)
-        if not chosen:
-            raise ValueError(
-                f"EasyStringNegEditor: no row matches selection "
-                f"'{line_numbers}' ({len(rows)} row(s) available)."
-            )
+        # numbers that match nothing simply select no row (empty output)
         return chosen
 
     def _select_preset(self, rows, presets_value, preset_line):
@@ -396,26 +379,17 @@ class EasyStringNegEditor:
             )
         content = self._resolve_preset_content(presets_value, preset_line)
         if not content:
-            raise ValueError(
-                f"EasyStringNegEditor: preset {preset_line} is empty - "
-                "add row numbers in the Presets tab."
-            )
+            # empty / missing / empty-number-list preset -> no rows chosen
+            return []
         numbers = parse_spec(content)
         if not numbers:
-            raise ValueError(
-                f"EasyStringNegEditor: preset {preset_line} has no usable "
-                "row numbers."
-            )
+            return []
         chosen = []
         for n in numbers:
             row = self._resolve_row_number(rows, n)
             if row is not None:
                 chosen.append(row)
-        if not chosen:
-            raise ValueError(
-                f"EasyStringNegEditor: preset {preset_line} ('{content}') "
-                f"matches no row ({len(rows)} row(s) available)."
-            )
+        # preset numbers that match nothing simply select no row
         return chosen
 
     # ------------------------------------------------------------------

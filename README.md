@@ -149,7 +149,7 @@ Each selected line may contain \`positive --- negative\`. The part before the fi
 
 *SelectorNeg-style* positive/negative builder backed by a **visual row editor**. The node works on both the classic (legacy) ComfyUI frontend and the new Vue-based frontend.
 
-Each row has: an optional **original number** (#), an optional **category**, a tick **checkbox**, a **positive** prompt, a **negative** prompt and an optional **image**. New rows and imported rows **start unticked**. With `select_checked` on, only ticked rows are used; with `select_all` off and `line_numbers` left empty the ticked rows are used as well. Images are stored in the workflow JSON itself (downscaled, as a data URL), so the workflow stays self-contained and needs no upload; the image is only a UI aid — it is shown in a preview when you hover the row, and is never sent to the API prompt.
+Each row has: an optional **original number** (#), an optional **category**, a tick **checkbox**, a **positive** prompt, a **negative** prompt and an optional **image**. New rows and imported rows **start unticked**. With `select_checked` on, only ticked rows are used; with `select_all` off and `line_numbers` left empty the ticked rows are used as well. When nothing is selected (nothing ticked, empty `line_numbers`, or a preset / row numbers that match no row), the node simply outputs empty strings instead of raising, so an empty choice is a valid "no rows" result. Images are stored in the workflow JSON itself (downscaled, as a data URL), so the workflow stays self-contained and needs no upload; the image is only a UI aid — it is shown in a preview when you hover the row, and is never sent to the API prompt.
 
 The **category** is a free-text label shown as a small chip on each row; the dialog can filter the list by category. The **checkbox** on each row is a manual pick: when the node input `select_checked` is on, only ticked rows reach the output (this overrides `select_all` and presets).
 
@@ -159,9 +159,9 @@ The **category** is a free-text label shown as a small chip on each row; the dia
 | --- | --- | --- | --- |
 | `rows` | STRING (JSON) | 2 demo rows | `[{num?, cat?, on?, pos, neg, img, freq?}, …]`; edit it through the **Add / Edit rows** button, not by hand |
 | `presets` | STRING (text) | empty | one preset per line: `N: row numbers` (`1: 108 193 135`); edit/import it in the **Presets** tab |
-| `line_numbers` | STRING | `` (empty) | rows to use when `select_all`/`use_preset`/`select_checked` are off (`1,3` or `2-4`); leave empty to use the checkbox-ticked rows |
-| `select_all` | BOOLEAN | `true` | `true` = use every row, `false` = use `line_numbers` (or the checkbox-ticked rows when `line_numbers` is empty) |
-| `select_checked` | BOOLEAN | `false` | `true` = use only rows ticked with the checkbox in the editor (manual pick; overrides `line_numbers` and presets) |
+| `line_numbers` | STRING | `` (empty) | rows to use when `select_all`/`use_preset`/`select_checked` are off (`1,3` or `2-4`); leave empty to use the checkbox-ticked rows; empty result outputs empty strings |
+| `select_all` | BOOLEAN | `true` | `true` = use every row, `false` = use `line_numbers` (or the checkbox-ticked rows when `line_numbers` is empty); an empty selection outputs empty strings |
+| `select_checked` | BOOLEAN | `false` | `true` = use only rows ticked with the checkbox in the editor (manual pick; overrides `line_numbers` and presets); none ticked outputs empty strings |
 | `use_preset` | BOOLEAN | `false` | `true` = use the preset chosen in `preset_line` instead of rows selection |
 | `preset_line` | INT | `1` | which preset (by its number) to apply when `use_preset` is on |
 | `weight` | FLOAT (slider) | `1.0` | element weight |

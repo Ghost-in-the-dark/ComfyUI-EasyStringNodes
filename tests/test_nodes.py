@@ -323,10 +323,13 @@ def test_neg_editor_no_rows_raises():
         node.process("[]")
 
 
-def test_neg_editor_no_match_raises():
+def test_neg_editor_no_match_gives_empty_output():
+    # row numbers that match nothing select nothing -> empty strings, not a crash
     node = EasyStringNegEditor()
-    with raises(ValueError):
-        node.process(ROWS_JSON, line_numbers="9", select_all=False)
+    pos, neg = node.process(ROWS_JSON, line_numbers="9", select_all=False,
+                            apply_weight=False)
+    assert pos == ""
+    assert neg == ""
 
 
 def test_neg_editor_row_keeps_image_out_of_output():
@@ -368,15 +371,17 @@ def test_neg_editor_empty_line_numbers_all_default_ticked():
     assert pos == 'a cute cat, a bird in flight'
 
 
-def test_neg_editor_empty_line_numbers_none_ticked_raises():
-    # empty line_numbers with no ticked row is a clear error, not a crash
+def test_neg_editor_empty_line_numbers_none_ticked_empty():
+    # empty line_numbers with no ticked row -> empty output, not a crash
     node = EasyStringNegEditor()
     rows = json.dumps([
         {'on': False, 'pos': 'a', 'neg': '', 'img': ''},
         {'on': False, 'pos': 'b', 'neg': '', 'img': ''},
     ])
-    with raises(ValueError):
-        node.process(rows, line_numbers="", select_all=False, apply_weight=False)
+    pos, neg = node.process(rows, line_numbers="", select_all=False,
+                            apply_weight=False)
+    assert pos == ""
+    assert neg == ""
 
 
 # ---------------- presets & numbering (EasyStringNegEditor)
@@ -421,11 +426,13 @@ def test_neg_editor_preset_mixed_num_and_position():
     assert pos == 'one, three'
 
 
-def test_neg_editor_preset_missing_raises():
+def test_neg_editor_preset_missing_empty():
+    # a preset that does not exist selects nothing -> empty output, not a crash
     node = EasyStringNegEditor()
-    with raises(ValueError):
-        node.process(_num_rows(1, 2), presets='9: 1', use_preset=True,
-                     preset_line=8, apply_weight=False)
+    pos, neg = node.process(_num_rows(1, 2), presets='9: 1', use_preset=True,
+                            preset_line=8, apply_weight=False)
+    assert pos == ""
+    assert neg == ""
 
 
 def test_neg_editor_line_numbers_use_num():
@@ -473,11 +480,13 @@ def test_neg_editor_use_preset_overrides_select_all():
     assert pos == 'row2'
 
 
-def test_neg_editor_empty_preset_raises():
+def test_neg_editor_empty_preset_empty():
+    # a preset whose number list is empty selects nothing -> empty output
     node = EasyStringNegEditor()
-    with raises(ValueError):
-        node.process(_num_rows(1), presets='1: 2', use_preset=True,
-                     preset_line=1, apply_weight=False)
+    pos, neg = node.process(_num_rows(1), presets='1: 2', use_preset=True,
+                            preset_line=1, apply_weight=False)
+    assert pos == ""
+    assert neg == ""
 
 
 
@@ -512,11 +521,13 @@ def test_neg_editor_select_checked_overrides_preset_and_all():
     assert pos == 'a'
 
 
-def test_neg_editor_select_checked_none_ticked_raises():
+def test_neg_editor_select_checked_none_ticked_empty():
+    # select_checked with nothing ticked -> empty output, not a crash
     node = EasyStringNegEditor()
     rows = json.dumps([{'on': False, 'pos': 'x', 'neg': '', 'img': ''}])
-    with raises(ValueError):
-        node.process(rows, select_checked=True, apply_weight=False)
+    pos, neg = node.process(rows, select_checked=True, apply_weight=False)
+    assert pos == ""
+    assert neg == ""
 
 
 def test_neg_editor_rows_without_on_default_to_ticked():
@@ -537,8 +548,10 @@ def test_neg_editor_rows_with_explicit_false_start_unticked():
         {'on': False, 'pos': 'a', 'neg': '', 'img': ''},
         {'on': False, 'pos': 'b', 'neg': '', 'img': ''},
     ])
-    with raises(ValueError):
-        node.process(rows, select_checked=True, apply_weight=False)
+    # select_checked with nothing ticked -> empty output
+    pos, neg = node.process(rows, select_checked=True, apply_weight=False)
+    assert pos == ""
+    assert neg == ""
     # ... but normal select_all still uses them all
     pos, _ = node.process(rows, select_all=True, apply_weight=False)
     assert pos == 'a, b'
