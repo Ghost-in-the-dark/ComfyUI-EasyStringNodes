@@ -10,10 +10,11 @@ import {
   state, cleanRows, syncFromWidget, commitRows, commitPresets,
   commitDataFile, countPresets, normalizePresetText, parseOldRows,
   dsList, dsLoad, dsSave, readImageFile, RENDER_CHUNK,
-  bumpDataRev, dataWidget,
+  bumpDataRev, dataWidget, categoryCounts,
 } from "./esn_core.js";
 import {
   sortRowsByFreq, sortRowsByNum, resizeNode, loadDatasetInto,
+  setCategoryFilter,
 } from "./esn_view.js";
 import { blurActiveSearch } from "./esn_search.js";
 
@@ -28,6 +29,10 @@ function closeDialog() {
   if (dlgTimerRef && dlgTimerRef._poll) {
     clearInterval(dlgTimerRef._poll);
     dlgTimerRef._poll = null;
+  }
+  if (dlgTimerRef && dlgTimerRef._catsTimer) {
+    clearTimeout(dlgTimerRef._catsTimer);
+    dlgTimerRef._catsTimer = null;
   }
   dlgTimerRef = null;
   if (dialog) {
@@ -85,9 +90,9 @@ function makeModalFrame(titleText) {
   title.style.marginRight = "auto";
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
-  closeBtn.textContent = "✕";
+  closeBtn.textContent = "Close";
   closeBtn.title = "Close (Esc)";
-  Object.assign(closeBtn.style, { cursor: "pointer", background: "transparent", color: "#ccc", border: "none", fontSize: "16px" });
+  Object.assign(closeBtn.style, { cursor: "pointer", background: "transparent", color: "#ccc", border: "1px solid #444", borderRadius: "6px", padding: "4px 10px", fontSize: "12px", minHeight: "24px" });
   closeBtn.addEventListener("click", closeDialog);
   header.appendChild(title);
   header.appendChild(closeBtn);
@@ -208,20 +213,22 @@ function buildRowCard(row, idx, api) {
     bb.title = tt;
     Object.assign(bb.style, {
       cursor: "pointer", background: "#2c2c2c", color: "#ddd",
-      border: "1px solid #444", borderRadius: "4px", padding: "2px 8px", fontSize: "12px",
+      border: "1px solid #444", borderRadius: "4px", padding: "4px 10px", fontSize: "12px",
+      minHeight: "24px",
     });
     return bb;
   };
-  const up = mk("↑", "Move up");
-  const down = mk("↓", "Move down");
-  const del = mk("🗑", "Delete row");
+  const up = mk("Up", "Move up");
+  const down = mk("Down", "Move down");
+  const del = mk("Delete", "Delete row");
   del.style.color = "#f88";
   // checkbox: manual pick (select_checked input uses rows with on=true)
   const onCb = document.createElement("input");
   onCb.type = "checkbox";
   onCb.checked = row.on !== false;
   onCb.title = "Tick to include this row when 'select_checked' is on";
-  Object.assign(onCb.style, { width: "16px", height: "16px", cursor: "pointer", accentColor: "#3a7bd5" });
+  // 18 px box + the browser's own padding = a >= 24 px hit target
+  Object.assign(onCb.style, { width: "18px", height: "18px", cursor: "pointer", accentColor: "#3a7bd5", margin: "0 2px" });
   onCb.addEventListener("change", () => { row.on = onCb.checked; });
 
   // category label (free text, filters the list / groups rows)
@@ -237,7 +244,16 @@ function buildRowCard(row, idx, api) {
     width: "110px", background: "#171717", color: "#eee", border: "1px solid #3d3d3d",
     borderRadius: "4px", padding: "2px 4px", fontSize: "11px",
   });
-  catInp.addEventListener("input", () => { row.cat = catInp.value; });
+  catInp.addEventListener("input", () => {
+    row.cat = catInp.value;
+    // typing a NEW category must make it selectable as a filter without
+    // closing and reopening the dialog: debounce so the <select> is not
+    // rebuilt (and the user's caret not disturbed) on every keystroke.
+    if (api.refreshCatsDebounced) api.refreshCatsDebounced();
+  });
+  catInp.addEventListener("change", () => {
+    if (api.refreshCats) api.refreshCats();
+  });
   catWrap.appendChild(catInp);
 
   const spacer = document.createElement("span");
@@ -300,7 +316,7 @@ function buildRowCard(row, idx, api) {
   const clearImg = document.createElement("button");
   clearImg.type = "button";
   clearImg.textContent = "Remove";
-  Object.assign(clearImg.style, { cursor: "pointer", background: "transparent", border: "none", color: "#e88", fontSize: "11px", padding: "0" });
+  Object.assign(clearImg.style, { cursor: "pointer", background: "transparent", border: "1px solid #633", borderRadius: "4px", color: "#f99", fontSize: "11px", padding: "4px 8px", minHeight: "24px" });
   clearImg.addEventListener("click", () => { row.img = ""; setThumb(); });
 
   imgCol.appendChild(thumb);
@@ -326,7 +342,7 @@ function showDialog(node, editIndex, initialTab) {
   const rows = cleanRows(state(node).rows); // working copy
   let pendingFile = state(node).file || "";
 
-  const frame = makeModalFrame("✎ Easy String Neg Editor");
+  const frame = makeModalFrame("Easy String Neg Editor");
   const overlay = frame.overlay;
   const body = frame.body;
   const footer = frame.footer;
@@ -377,55 +393,60 @@ function showDialog(node, editIndex, initialTab) {
 
   const searchInp = document.createElement("input");
   searchInp.type = "text";
-  searchInp.placeholder = "Search rows (pos / neg / number)…";
+  searchInp.placeholder = "Search rows: number, category, positive, negative";
   Object.assign(searchInp.style, {
     flex: "1", minWidth: "140px", background: "#171717", color: "#eee",
     border: "1px solid #3d3d3d", borderRadius: "6px", padding: "7px 10px", fontSize: "13px",
   });
   const addBtn = mkBtn("+ Add row", { bg: "#2f6f4f", color: "#fff" });
-  const importBtn = mkBtn("↗ Import old data", { bg: "#5a4a2f", color: "#ffe8b0", title: "Paste numbered rows (N: … ~) or choose a file" });
-  // tick / untick every row at once (rows start unticked; only ticked rows
-  // are used when the node input select_checked is on)
-  const checkAllB = mkBtn("✓ all", { pad: "5px 9px", font: "12px", title: "Tick every row" });
-  checkAllB.addEventListener("click", () => { rows.forEach((r) => { r.on = true; }); applyFilter(); });
-  const uncheckAllB = mkBtn("✗ none", { pad: "5px 9px", font: "12px", title: "Untick every row" });
-  uncheckAllB.addEventListener("click", () => { rows.forEach((r) => { r.on = false; }); applyFilter(); });
-  const sortFreqB = mkBtn("⇅ by use", { pad: "5px 9px", font: "12px", title: "Sort rows by usage frequency (most used first)" });
-  sortFreqB.addEventListener("click", () => {
-    const ordered = sortRowsByFreq(rows);
-    rows.length = 0;
-    for (const r of ordered) rows.push(r);
-    applyFilter();
-  });
-  const sortNumB = mkBtn("↺ # order", { pad: "5px 9px", font: "12px", title: "Restore the original order by the row number (#) - undoes a frequency sort" });
-  sortNumB.addEventListener("click", () => {
-    const ordered = sortRowsByNum(rows);
-    rows.length = 0;
-    for (const r of ordered) rows.push(r);
-    applyFilter();
-  });
-  // category filter: built from all row cats; '' = all
+  const importBtn = mkBtn("Import old data", { bg: "#5a4a2f", color: "#ffe8b0", title: "Paste numbered rows (N: … ~) or choose a file" });
+
+  // ---- bulk tick buttons -------------------------------------------------
+  // Same contract as the buttons on the node: they act on the rows currently
+  // visible in this dialog (search + category filter applied), and the number
+  // of rows they would touch is shown as a counter. Without a filter that is
+  // simply every row.
+  const checkAllB = mkBtn("Tick all", { pad: "5px 9px", font: "12px", title: "Tick every visible row" });
+  const uncheckAllB = mkBtn("Untick all", { pad: "5px 9px", font: "12px", title: "Untick every visible row" });
+
+  // ---- sorting -----------------------------------------------------------
+  // Both buttons reorder the dialog's WORKING COPY only; the dataset file and
+  // the node list are untouched until Save. "By usage" re-runs on every click
+  // so it always places the currently most used rows first.
+  const sortFreqB = mkBtn("By usage", { pad: "5px 9px", font: "12px", title: "Order the rows by usage frequency (most used first). Applied on Save." });
+  const sortNumB = mkBtn("By number", { pad: "5px 9px", font: "12px", title: "Order the rows by their original number (#), undoing a frequency sort. Applied on Save." });
+
+  // category filter: a <select> is keyboard reachable and shows the row count
+  // of every category in its label, so the list can be scanned and filtered
+  // without typing a search query.
   const catSel = document.createElement("select");
   const allOpt = document.createElement("option");
   allOpt.value = "";
-  allOpt.textContent = "All categories";
   catSel.appendChild(allOpt);
   const rebuildCats = () => {
     const cur = catSel.value;
     catSel.innerHTML = "";
-    catSel.appendChild(allOpt);
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = "All categories (" + rows.length + ")";
+    catSel.appendChild(all);
     const seen = [];
-    rows.forEach((r) => { const c = (r.cat || "").trim(); if (c && seen.indexOf(c) === -1) seen.push(c); });
-    seen.sort();
-    seen.forEach((c) => {
+    for (const c of categoryCounts(rows)) {
       const o = document.createElement("option");
-      o.value = c; o.textContent = c; catSel.appendChild(o);
-    });
+      o.value = c.name;
+      o.textContent = c.name + " (" + c.count + ")";
+      const short = c.name.length > 18 ? c.name.slice(0, 17) + "…" : c.name;
+      o.title = o.textContent;
+      o.__esnShort = short;
+      catSel.appendChild(o);
+      seen.push(c.name);
+    }
     if (cur && seen.indexOf(cur) !== -1) catSel.value = cur;
+    else if (cur && seen.indexOf(cur) === -1) catSel.value = "";
   };
   rebuildCats();
-  Object.assign(catSel.style, { background: "#171717", color: "#eee", border: "1px solid #3d3d3d", borderRadius: "6px", padding: "7px 6px", fontSize: "13px", maxWidth: "170px" });
-  catSel.title = "Filter rows by category";
+  Object.assign(catSel.style, { background: "#171717", color: "#eee", border: "1px solid #3d3d3d", borderRadius: "6px", padding: "7px 6px", fontSize: "13px", maxWidth: "190px" });
+  catSel.title = "Show only rows of one category";
 
   toolbar.appendChild(searchInp);
   toolbar.appendChild(catSel);
@@ -438,7 +459,7 @@ function showDialog(node, editIndex, initialTab) {
   rowsPanel.appendChild(toolbar);
 
   const hintEl = document.createElement("div");
-  Object.assign(hintEl.style, { color: "#888", fontSize: "11px" });
+  Object.assign(hintEl.style, { color: "#aaa", fontSize: "11px" });
   rowsPanel.appendChild(hintEl);
 
   const list = document.createElement("div");
@@ -446,6 +467,17 @@ function showDialog(node, editIndex, initialTab) {
   rowsPanel.appendChild(list);
 
   const rowsApi = {
+    // called by a card when its category changes, so the filter <select>
+    // offers that category right away (finding: the list only refreshed on
+    // add / delete / import, so a freshly typed category was not selectable)
+    refreshCats() {
+      if (catsTimer) { clearTimeout(catsTimer); catsTimer = null; }
+      rebuildCats();
+    },
+    refreshCatsDebounced() {
+      if (catsTimer) clearTimeout(catsTimer);
+      catsTimer = setTimeout(() => { catsTimer = null; rebuildCats(); }, 400);
+    },
     moveUp(card) {
       const i = rows.indexOf(card.__esnRow);
       if (i > 0) {
@@ -475,6 +507,7 @@ function showDialog(node, editIndex, initialTab) {
   // ---- windowed rendering: only build cards for what is visible ----
   let viewRows = []; // filtered rows currently backing the DOM list
   let renderedCount = 0;
+  let catsTimer = null; // debounce for rebuilding the category <select>
   const cardEls = new Map(); // row -> live card element
 
   function rowMatches(row, q, cat) {
@@ -522,9 +555,13 @@ function showDialog(node, editIndex, initialTab) {
     renderedCount = 0;
     renderChunk(0);
     const showAll = viewRows.length === rows.length;
+    let ticked = 0;
+    for (const r of viewRows) if (r.on !== false) ticked++;
+    checkAllB.textContent = showAll ? "Tick all" : "Tick all " + viewRows.length;
+    uncheckAllB.textContent = showAll ? "Untick all" : "Untick all " + viewRows.length;
     hintEl.textContent = viewRows.length + " of " + rows.length + " row(s)" +
-      (!showAll ? " (filtered)" : "") + (cat ? " - category: " + cat : "") +
-      " - rows start unticked: tick the ones to use when select_checked is on";
+      (!showAll ? " (filtered" + (cat ? ": " + cat : "") + ")" : "") +
+      " · " + ticked + " ticked · ticking rows only matters when select_checked is on";
   }
 
   list.addEventListener("scroll", () => {
@@ -535,14 +572,41 @@ function showDialog(node, editIndex, initialTab) {
   });
 
   searchInp.addEventListener("input", applyFilter);
-  catSel.addEventListener("change", applyFilter);
+  catSel.addEventListener("change", () => {
+    applyFilter();
+    // the dialog filter and the node filter are the same state: clicking a
+    // category here also filters the node list
+    setCategoryFilter(node, catSel.value);
+  });
+
+  checkAllB.addEventListener("click", () => {
+    viewRows.forEach((r) => { r.on = true; });
+    applyFilter();
+  });
+  uncheckAllB.addEventListener("click", () => {
+    viewRows.forEach((r) => { r.on = false; });
+    applyFilter();
+  });
+  sortFreqB.addEventListener("click", () => {
+    const ordered = sortRowsByFreq(rows);
+    rows.length = 0;
+    for (const r of ordered) rows.push(r);
+    applyFilter();
+  });
+  sortNumB.addEventListener("click", () => {
+    const ordered = sortRowsByNum(rows);
+    rows.length = 0;
+    for (const r of ordered) rows.push(r);
+    applyFilter();
+  });
 
   addBtn.addEventListener("click", () => {
-    const row = { num: null, cat: "", on: false, pos: "", neg: "", img: "" };
+    const row = { num: null, cat: catSel.value || "", on: false, pos: "", neg: "", img: "" };
     rows.push(row);
     rebuildCats();
     searchInp.value = "";
     catSel.value = "";
+    setCategoryFilter(node, "");
     applyFilter();
     list.scrollTop = list.scrollHeight;
     const card = cardEls.get(row);
@@ -570,9 +634,9 @@ function showDialog(node, editIndex, initialTab) {
     const hd = document.createElement("div");
     Object.assign(hd.style, { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: "1px solid #333" });
     const hT = document.createElement("div");
-    hT.textContent = "↗ Import old data";
+    hT.textContent = "Import old data";
     hT.style.fontWeight = "bold";
-    const hX = mkBtn("✕", { bg: "transparent", border: "none", pad: "2px 8px", font: "16px" });
+    const hX = mkBtn("Close", { bg: "transparent", border: "1px solid #444", pad: "4px 10px", font: "12px" });
     hX.addEventListener("click", () => im.remove());
     hd.appendChild(hT);
     hd.appendChild(hX);
@@ -686,7 +750,7 @@ function showDialog(node, editIndex, initialTab) {
   pTaRef.value = pTa;
   const pTool = document.createElement("div");
   Object.assign(pTool.style, { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" });
-  const pImp = mkBtn("↗ Import presets…", { bg: "#5a4a2f", color: "#ffe8b0", title: "Paste a preset block (merges)" });
+  const pImp = mkBtn("Import presets…", { bg: "#5a4a2f", color: "#ffe8b0", title: "Paste a preset block (merges)" });
   const pCnt = document.createElement("span");
   Object.assign(pCnt.style, { color: "#888", fontSize: "11px" });
   const refreshCnt = () => { pCnt.textContent = countPresets(pTa.value) + " preset(s)"; };
@@ -727,7 +791,7 @@ function showDialog(node, editIndex, initialTab) {
   dName.addEventListener("input", () => { pendingFile = dName.value.trim(); });
   const dSave = mkBtn("Save to file", { bg: "#2f6f4f", color: "#fff" });
   const dLoad = mkBtn("Load from file", { bg: "#3a7bd5", color: "#fff" });
-  const dRefresh = mkBtn("↻", { title: "Refresh file list" });
+  const dRefresh = mkBtn("Refresh", { title: "Refresh file list" });
   dRow1.appendChild(dName);
   dRow1.appendChild(dSave);
   dRow1.appendChild(dLoad);
@@ -785,8 +849,9 @@ function showDialog(node, editIndex, initialTab) {
       return;
     }
     files.forEach((name) => {
-      const rowBtn = mkBtn(name, { bg: "transparent", font: "12px", pad: "4px 8px" });
+      const rowBtn = mkBtn(name, { bg: "transparent", font: "12px", pad: "6px 8px" });
       rowBtn.style.textAlign = "left";
+      rowBtn.style.minHeight = "24px";
       rowBtn.addEventListener("click", () => {
         dName.value = name;
         pendingFile = name;
@@ -907,7 +972,7 @@ function showDialog(node, editIndex, initialTab) {
 
   document.body.appendChild(overlay);
 
-  const dlg = { _overlay: overlay, _onKey: null };
+  const dlg = { _overlay: overlay, _onKey: null, _poll: null, _catsTimer: catsTimer };
   const onKey = (e) => {
     if (e.key === "Escape") closeDialog();
   };

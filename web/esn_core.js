@@ -12,6 +12,8 @@
 //   esn_lifecycle.js   node setup / refresh / dataset loading
 //   easy_string_neg_editor.js  entry point - extension registration only
 //
+// v1.5.7: category filtering, >=24 px targets, tokenised canvas palette,
+//          width-aware text truncation.
 // v1.5.6: refactor — data layer extracted from the monolithic editor file.
 // v1.5.5: on-node search bar, usage-frequency ranking (×N + ⇅ sort), drag
 // scrollbar for long row lists.
@@ -32,22 +34,54 @@ const ADV_WIDGETS = [
   "line_numbers", "select_all", "use_preset", "preset_line",
   "weight", "apply_weight", "add_break", "select_checked",
 ];
-const MAX_DRAWN_ROWS = 8; // rows visible on the node (toolbar row above takes 22 px)
+const MAX_DRAWN_ROWS = 8; // rows visible on the node (toolbar row above takes 28 px)
 const WHEEL_STEP = 3;
 const PRESET_WHEEL_STEP = 2; // wheel notches per preset-list scroll
 const RENDER_CHUNK = 60;
 
-const ROW_H = 20; // px per drawn row
+// --- layout ---------------------------------------------------------------
+// Sizes are chosen so every clickable control clears the WCAG 2.2 SC 2.5.8
+// minimum target of 24x24 px. Rows are 22 px tall and the checkbox column is
+// 24 px wide, so a checkbox cell measures 24x22 with the row's own 1 px hit
+// tolerance on each side (24x24 effective).
+const ROW_H = 22; // px per drawn row (row = one click target)
 const HEADER_H = 24;
-const SEARCH_H = 20; // px of the always-visible search bar below the header
-const TOOL_H = 22; // px of the button toolbar below the search bar (✓ all / ✗ none / ⇅ by use)
+const SEARCH_H = 22; // px of the always-visible search bar below the header
+const TOOL_H = 28; // px of the toolbar row (24 px buttons + 4 px padding)
+const STATUS_H = 22; // px of the filter/status bar under the toolbar
+const SCROLL_H = 24; // px of the rows-scroll band under the rows list (28x24 arrow buttons)
 const FREQ_W = 26; // px reserved on the right of a row for the usage counter
-const SB_W = 9; // scrollbar track width for the rows list
+const SB_W = 9; // scrollbar track width for the rows list (visual only)
+const SB_HIT_W = 24; // px of the scrollbar's pointer-capture band
 // presets section drawn below the row list on the node canvas
 const MAX_DRAWN_PRESETS = 4; // preset lines visible on the node
-const PRESET_H = 16; // px per preset line
-const PRESET_HDR_H = 18; // px for the "Presets" section header
+const PRESET_H = 18; // px per preset line
+const PRESET_HDR_H = 20; // px for the "Presets" section header
+const PRESET_SCROLL_H = 24; // px of the presets scroll band (28x24 arrow buttons)
+const PRESET_CTRL_H = 26; // px of the presets control row (24 px buttons)
+const PRESET_EMPTY_H = 22; // px of the "no presets yet" line
 const PRESET_GAP = 4; // px above the section
+
+// --- colour ---------------------------------------------------------------
+// Semantic canvas palette. Contrast ratios are against the darkest node body
+// the theme uses (#1a1a1a..#303030) and every text colour is >= 4.5:1 (WCAG AA
+// for normal text). This is the start of the token layer: new canvas code
+// should use COL instead of inventing another hex literal.
+const COL = {
+  text: "#e8e8e8",
+  textStrong: "#cfc",
+  textDim: "#a0a0a0", // row numbers, secondary meta       (4.8:1 on #303030)
+  textMuted: "#9a9a9a", // hints, status bar                (4.5:1 on #303030)
+  textEmpty: "#a8a8a8", // "(no rows yet)" lines            (5.2:1 on #303030)
+  placeholder: "#8f8f8f", // search placeholder            (5.9:1 on the search box)
+  accentCat: "#8af", // category chip (idle)
+  accentCatOn: "#ffd873", // category chip of the active filter
+  chipInk: "#04121f", // text on a category chip
+  accentSort: "#ffd873", // active toolbar button label
+  accentTick: "#6cf", // ticked checkbox
+  accentPreset: "#fca", // presets section header
+  warn: "#ffcc66", // hot usage counter
+};
 const IMG_MAX_EDGE = 384;
 const IMG_QUALITY = 0.82;
 const NL = String.fromCharCode(10); // newline without backslash escapes
@@ -143,12 +177,20 @@ function state(node) {
       search: "", // active filter text (typed in the on-node search bar)
       searchFocus: false, // is the on-node search field focused?
       onlyChecked: false, // view filter: show only ticked (on=true) rows
-      view: [], // [{row, oi}] rows matching st.search + onlyChecked (oi = index in st.rows)
+      catFilter: "", // view filter: show only rows whose cat matches exactly
+      catPickOpen: false, // is the category popover list open?
+      view: [], // [{row, oi}] rows matching st.search + onlyChecked + catFilter (oi = index in st.rows)
       draggingSb: false, // dragging the rows scrollbar thumb
       sbStartY: 0, sbStartNodeY: 0, sbStartClientY: 0, sbScale: 1, sbGrabOffset: 0, sbZone: null,
+      hoverKey: -1, // row index under the mouse (for stateless draw-time hover)
       sortBtn: null, // header sort control hit zone (unused; kept for compat)
       sortedByFreq: false, // view-only flag: draw rows by usage frequency
       toolbarBtns: null, // {tick,none,only,sort} hit zones of the toolbar row
+      statusBar: null, // {x0,x1,y,y1} hit zone band of the status bar (chip / cat button)
+      catBtn: null, // "category" toolbar button hit zone
+      catChip: null, // chip of the currently active category filter hit zone
+      catPop: null, // {x,y,w,h,rows} category popover geometry (for hit-testing)
+      catPopRows: null, // category popover rows as [{name,n,y,h}] in node coords
       settingsHidden: false, // is the python settings block (line_numbers …) collapsed?
       settingsBtn: null, // header settings-switch hit zone
       // per-row node-local rects set during draw
@@ -161,8 +203,8 @@ function state(node) {
       presetListArea: null, // {top,bottom} of drawn preset lines (when overflowing)
       presetRects: [], // {top,bottom,num,content} hit zones of preset lines
       presetsHeader: null, // {top,bottom} hit zone of the section header
-      presetUp: null, // {top,bottom} hit zone of the presets ▲
-      presetDown: null, // {top,bottom} hit zone of the presets ▼
+      presetUp: null, // {top,bottom} hit zone of the presets scroll-up button
+      presetDown: null, // {top,bottom} hit zone of the presets scroll-down button
       presetUse: null, // {x,y,w,h} "use_preset" toggle button
       presetPrev: null, // {x,y,w,h} previous preset button
       presetNext: null, // {x,y,w,h} next preset button
@@ -534,6 +576,43 @@ function presetEntries(text) {
   return out;
 }
 
+// Categories present in a row list: [{name, count}] sorted by name.
+// Rows without a category are not listed (the picker's "All categories" entry
+// is the way back to the unfiltered view).
+function categoryCounts(rows) {
+  const seen = new Map();
+  for (const row of rows || []) {
+    const c = String((row && row.cat) || "").trim();
+    if (!c) continue;
+    seen.set(c, (seen.get(c) || 0) + 1);
+  }
+  const out = [];
+  for (const [name, count] of seen) out.push({ name: name, count: count });
+  out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return out;
+}
+
+// Width-aware truncation: unlike clampText() this measures the real text, so
+// a proportional font is never cut to the wrong length (and never overflows
+// its column). Falls back to the character clamp when ctx is unusable.
+function clampTextToWidth(ctx, text, maxPx) {
+  text = String(text == null ? "" : text);
+  try {
+    if (!ctx || typeof ctx.measureText !== "function") throw new Error("no ctx");
+    if (ctx.measureText(text).width <= maxPx) return text;
+    let lo = 0;
+    let hi = text.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (ctx.measureText(text.slice(0, mid) + "\u2026").width <= maxPx) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo > 0 ? text.slice(0, lo) + "\u2026" : "";
+  } catch (e) {
+    return clampText(text, Math.max(1, Math.floor(maxPx / 6)));
+  }
+}
+
 // Current run-time preset choice from the python widgets (use_preset, preset_line).
 function presetChoice(node) {
   const useW = findWidget(node, "use_preset");
@@ -739,18 +818,19 @@ export {
   ADV_WIDGETS,
   // layout constants
   MAX_DRAWN_ROWS, WHEEL_STEP, PRESET_WHEEL_STEP, RENDER_CHUNK,
-  ROW_H, HEADER_H, SEARCH_H, FREQ_W, SB_W,
+  ROW_H, HEADER_H, SEARCH_H, FREQ_W, SB_W, SB_HIT_W,
   MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
-  TOOL_H,
+  TOOL_H, STATUS_H, SCROLL_H, PRESET_SCROLL_H, PRESET_CTRL_H, PRESET_EMPTY_H,
+  COL,
   IMG_MAX_EDGE, IMG_QUALITY, NL, CR,
   // helpers
-  isDigits, parseRows, cleanRows, dumpRows, clampText, state,
+  isDigits, parseRows, cleanRows, dumpRows, clampText, clampTextToWidth, state,
   findWidget, rowsWidget, presetsWidget, dataWidget, widgetRawValue,
   hideTextWidget, unhideTextWidget, hideRowsWidget, syncFromWidget,
   persistFileNow, scheduleFilePersist, bumpDataRev,
   commitRows, commitPresets, commitDataFile,
   settingsCollapsed, applySettingsCollapsed, toggleSettingsCollapsed,
-  countPresets, presetEntries, presetChoice, stepPresetChoice,
+  countPresets, presetEntries, categoryCounts, presetChoice, stepPresetChoice,
   setPresetChoice, normalizePresetText,
   parseOldLine, parseOldRows, indexOfTopLevelDash,
   dsList, dsLoad, dsSave,

@@ -10,7 +10,7 @@ import { app } from "../../scripts/app.js";
 import {
   state, presetEntries, NODE_CLASS,
   MAX_DRAWN_ROWS, WHEEL_STEP, PRESET_WHEEL_STEP,
-  HEADER_H, SEARCH_H, TOOL_H, MAX_DRAWN_PRESETS,
+  HEADER_H, SEARCH_H, TOOL_H, STATUS_H, SCROLL_H, MAX_DRAWN_PRESETS,
 } from "./esn_core.js";
 import { isDialogOpen } from "./esn_dialog.js";
 
@@ -119,6 +119,28 @@ function hitRowAt(gx, gy) {
   return null;
 }
 
+// Row index under a graph point, for the hover highlight, or null.
+function hoverRowIndexAt(gx, gy) {
+  const graph = app.graph;
+  if (!graph || !graph._nodes) return null;
+  for (let i = graph._nodes.length - 1; i >= 0; i--) {
+    const node = graph._nodes[i];
+    if (!node || node.type !== NODE_CLASS || !node.__esnListWidget) continue;
+    const st = state(node);
+    if (!st.rects.length) continue;
+    const x0 = node.pos ? node.pos[0] : 0;
+    const y0 = node.pos ? node.pos[1] : 0;
+    const size = node.size || [220, 100];
+    if (gx < x0 || gx > x0 + size[0] || gy < y0 || gy > y0 + size[1]) continue;
+    const ly = gy - y0;
+    for (const r of st.rects) {
+      if (ly >= r.top && ly <= r.bottom) return { node, index: r.index };
+    }
+    return null;
+  }
+  return null;
+}
+
 function onCanvasPointerMove(e) {
   const canvas = app.canvas;
   if (!canvas || !canvas.canvas) return;
@@ -126,6 +148,25 @@ function onCanvasPointerMove(e) {
     if (typeof canvas.adjustMouseEvent === "function") canvas.adjustMouseEvent(e);
   } catch (err) {}
   const { x, y } = graphCoordsOf(e, canvas);
+  // hover feedback for the row highlight / category popover rows: the canvas
+  // only redraws when something actually changed
+  const hov = hoverRowIndexAt(x, y);
+  if (hov && hov.node.__esn) {
+    const stn = hov.node.__esn;
+    if (stn.hoverKey !== hov.index) {
+      stn.hoverKey = hov.index;
+      app.graph?.setDirtyCanvas?.(true, true);
+    }
+  }
+  for (const node of (app.graph && app.graph._nodes) || []) {
+    if (!node || node.type !== NODE_CLASS || !node.__esn) continue;
+    const stn = node.__esn;
+    if (stn === (hov && hov.node.__esn)) continue;
+    if (stn.hoverKey !== -1) {
+      stn.hoverKey = -1;
+      app.graph?.setDirtyCanvas?.(true, true);
+    }
+  }
   const hit = hitRowAt(x, y);
   if (!hit || !hit.row || !hit.row.img) {
     hideHover();
@@ -243,11 +284,12 @@ function installHover() {
         const viewRows = st0.view ? st0.view.length : st0.rows.length;
         const maxRowScroll = viewRows - MAX_DRAWN_ROWS;
         if (maxRowScroll > 0 && st0.rowsAreaBottom) {
-          // rows begin below the search bar AND the button toolbar; the band
-          // stops at the scroll hint row so the ▲/▼ arrows keep working
-          let rowsTop = st0.widgetY + HEADER_H + SEARCH_H + TOOL_H;
-          if (st0.toolbarBtns) rowsTop = st0.toolbarBtns.y + st0.toolbarBtns.h;
-          const rowsBottom = st0.rowsAreaBottom - 18;
+          // rows begin below the search bar, the button toolbar and the status
+          // bar; the band stops at the scroll hint row so the ▲/▼ arrows keep
+          // working
+          let rowsTop = st0.widgetY + HEADER_H + SEARCH_H + TOOL_H + STATUS_H;
+          if (st0.toolbarBtns) rowsTop = st0.toolbarBtns.y + st0.toolbarBtns.h + STATUS_H;
+          const rowsBottom = st0.rowsAreaBottom - SCROLL_H;
           if (ly > rowsTop && ly < rowsBottom && lx > 0 && lx < size[0]) {
             if (delta !== 0) {
               st0.scroll = Math.max(0, Math.min(maxRowScroll, st0.scroll + delta * WHEEL_STEP));
@@ -259,6 +301,16 @@ function installHover() {
         // presets list scroll (only when it overflows its area)
         const entries = presetEntries(st0.presets);
         const maxPScroll = entries.length - MAX_DRAWN_PRESETS;
+        if (st0.catPickOpen && st0.catPop && st0.catPop.maxScroll > 0) {
+          if (lx >= st0.catPop.x && lx <= st0.catPop.x + st0.catPop.w &&
+              ly >= st0.catPop.y && ly <= st0.catPop.y + st0.catPop.h) {
+            if (delta !== 0) {
+              st0.catPopScroll = Math.max(0, Math.min(st0.catPop.maxScroll, (st0.catPopScroll || 0) + delta));
+              app.graph?.setDirtyCanvas?.(true, true);
+            }
+            return true;
+          }
+        }
         if (maxPScroll > 0 && st0.presetListArea) {
           if (ly > st0.presetListArea.top && ly < st0.presetListArea.bottom &&
               lx > 0 && lx < size[0]) {

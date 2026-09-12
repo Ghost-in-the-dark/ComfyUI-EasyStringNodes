@@ -17,6 +17,10 @@
 //     through untouched, so ComfyUI shortcuts and dialog typing keep working;
 //   * blur: a pointerdown outside every search capsule deactivates the bar.
 //
+// The search text is only one of three view filters: it combines (AND) with
+// the node's "only ticked" flag and its category filter, so every bulk action
+// in the toolbar works on exactly the rows the list shows.
+//
 // No hidden <input> is created, so the bar behaves identically on both UIs
 // and never depends on focus() succeeding for an invisible element.
 
@@ -132,7 +136,7 @@ function onPointerDownCapture(e) {
     // click on a search capsule: activate that node's bar (or keep it), and
     // swallow the click so LiteGraph does not also treat it as a row click
     if (hit.st.searchClear && hit.lx >= hit.st.searchClear.x && hit.lx <= hit.st.searchClear.x + hit.st.searchClear.w) {
-      // ✕ clears the filter of this node (and deactivates)
+      // the field's clear mark clears the filter (and deactivates)
       searchNode = hit.node;
       hit.st.search = "";
       hit.st.searchFocus = false;

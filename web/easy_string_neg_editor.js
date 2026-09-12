@@ -4,11 +4,14 @@
 // EasyStringNegEditor node. Compatible with BOTH the legacy ComfyUI web UI
 // and the new ComfyUI_frontend based UI.
 //
+// v1.5.7: category filtering on the node and in the dialog, 24 px minimum
+// hit targets, tokenised colours, drawn (non-emoji) icons, count badges and a
+// node status bar.
 // v1.5.6: front-end split into small ESM modules for readability (this file
 // is now only the entry point that registers the extension).
 // v1.5.5: on-node search bar (filters by num/cat/pos/neg), a usage-frequency
-// ranking (×N counters fed back from Python through onExecuted, header ⇅ sort
-// and dialog ⇅ by use), and a draggable scrollbar for long row lists.
+// ranking (xN counters fed back from Python through onExecuted, the on-node
+// "use" sort and the dialog "By usage" sort), and a draggable scrollbar.
 //
 // The front-end code is split into small ESM modules:
 //
