@@ -50,6 +50,13 @@ jobs:
       - name: Exclude widget collapse
         run: node tests/tg_exclude_hidden.mjs
 
+      # The on-node "show graph" button is hit-tested by hand, and draw() and
+      # mouse() use different coordinate frames. Getting that wrong renders a
+      # perfect button that does nothing when clicked - which is exactly what
+      # shipped once, because no test ever called mouse().
+      - name: Widget button click
+        run: node tests/tg_widget_click.mjs
+
       - name: Node logic
         run: python3 tests/test_nodes.py
 

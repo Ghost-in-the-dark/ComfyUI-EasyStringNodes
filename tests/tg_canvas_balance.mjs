@@ -260,9 +260,14 @@ for (const [label, node, opts] of buildWidgetStates()) {
     threw = e && e.message ? e.message : String(e);
   }
   const delta = rec.depthNow() - depthIn;
-  // Text placement is checked here too: the strip is drawn into whatever band
-  // it is given, and two captions on one baseline are a rendering bug even when
-  // the save/restore balance is perfect.
+  // Text placement is checked here too: two captions on one baseline are a
+  // rendering bug even when the save/restore balance is perfect.
+  //
+  // The strip lays itself out to the height IT asks for, deliberately ignoring
+  // the band argument: on a real canvas the front-end handed a 590px node a
+  // band tall enough for the header only, and honouring that skipped every
+  // token row while the node body reserved their full space. So the bounds
+  // check below is against the widget's own height, not against opts.h.
   const lines = new Map();
   for (const b of rec.texts) {
     const k = Math.round(b.y * 2) / 2;
@@ -272,7 +277,11 @@ for (const [label, node, opts] of buildWidgetStates()) {
   const ys = [...lines.keys()].sort((a, b) => a - b);
   let collisions = 0;
   for (let i = 1; i < ys.length; i++) if (ys[i] - ys[i - 1] < 11) collisions += 1;
-  const bandBottom = 20 + opts.h;
+  // The widget's own requested height is the truth; opts.h only says how much
+  // room the caller offered, and a smaller offer must not change the drawing.
+  let ownH = 0;
+  try { ownH = widget.computeSize(w)[1]; } catch (e) { ownH = opts.h; }
+  const bandBottom = 20 + Math.max(ownH, opts.h);
   const outside = ys.filter((v) => v < 18 || v > bandBottom + 2).length;
   if (delta !== 0 || threw) {
     failures.push({ state: label, delta, threw });
@@ -284,6 +293,27 @@ for (const [label, node, opts] of buildWidgetStates()) {
     });
   }
   results.push({ state: label, delta, threw, collisions, outside });
+}
+
+// A squeezed band must not change what the strip draws. This is the reported
+// bug: the button rendered but the rows did not, because the front-end passed a
+// much smaller height than the widget had reserved.
+for (const [label, opts] of [["squeezed vs full band", {}], ["narrow + squeezed", { w: 200 }]]) {
+  const node = mkNode(opts);
+  seedStats(node, CORPUS);
+  const widget = makeTokenWidget(node);
+  const w = opts.w || node.size[0];
+  const shots = [];
+  for (const h of [widget.computeSize(w)[1], 80, 26]) {
+    const rec = recordingCtx("tg_widget.js");
+    rec.ctx.save(); rec.ctx.save();
+    widget.draw(rec.ctx, node, w, 20, h);
+    shots.push(rec.texts.map((b) => b.s).join("|"));
+  }
+  const same = shots.every((s) => s === shots[0]);
+  const textCount = shots[0] ? shots[0].split("|").length : 0;
+  if (!same) failures.push({ state: label, reason: "drawing depends on the band argument", shots });
+  results.push({ state: label, delta: 0, threw: null, collisions: 0, outside: 0, same, textCount });
 }
 
 for (const [label, rows, edges, emptyText, opts] of buildGraphStates()) {
@@ -312,7 +342,7 @@ for (const [label, rows, edges, emptyText, opts] of buildGraphStates()) {
 console.log("canvas state balance — depth after draw() must equal depth before");
 for (const r of results) {
   const mark = r.delta === 0 && !r.threw ? "ok  " : "FAIL";
-  const extra = (r.collisions || r.outside)
+  const extra = (r.same === false) ? "  <-- drawing changed with the band" : (r.collisions || r.outside)
     ? `  <-- collisions=${r.collisions} outside=${r.outside}`
     : "";
   console.log(`  ${mark} ${r.state.padEnd(38)} delta=${r.delta}${r.threw ? " threw=" + r.threw : ""}${extra}`);

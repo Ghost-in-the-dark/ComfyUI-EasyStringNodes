@@ -19,6 +19,11 @@ const NOTE_H = 15;
 const FOOT_H = 15;
 const PAD = 8;
 const BAR_W = 74;
+// The header button's box. draw() paints it and mouse() hit-tests it, so the
+// two numbers exist ONCE: duplicating them is how the hit test drifted away
+// from the painted rectangle in the first place.
+const BTN_W = 96;
+const BTN_H = 22;
 const UI_NAME = "token_graph_ui";
 
 const COL = {
@@ -134,7 +139,22 @@ function makeTokenWidget(node) {
       // footer at `y + height - 8` and the "+N more" line at the end of the
       // list independently, so when the band was short the two landed on the
       // same line and rendered on top of each other as unreadable purple mush.
-      const bandBottom = y + Math.max(0, Number(height) || widgetHeight(n));
+      // The `height` argument is NOT trustworthy. Observed on a real canvas: a
+      // 590px-tall node handed this widget a band tall enough for the header
+      // only, so every token row was skipped while the node body reserved their
+      // full height - the strip looked blank and there was a large empty block
+      // below it. The pack's other canvas widget avoids the whole class of bug
+      // by treating `y` as the only trustworthy input and reading its height
+      // from computeSize() instead (web/esn_widget.js draws with `y` and never
+      // reads H). This widget does the same: it lays out the height it asked
+      // for, so what is drawn always matches the space the node reserved.
+      void height;
+      const granted = widgetHeight(n);
+      // Where this widget was painted, in node space. mouse() receives pos in
+      // this same frame, so the button's hit test needs it (see mouse() below).
+      st.widgetY = y;
+      st.widgetH = granted;
+      const bandBottom = y + granted;
       let cursor = y + 2;
 
       ctx.save();
@@ -143,28 +163,26 @@ function makeTokenWidget(node) {
         ctx.textBaseline = "middle";
 
         // --- header: button + run count -------------------------------
-        const btnW = 96;
-        const btnH = 22;
         const btnX = PAD;
         const btnY = cursor;
         const open = isPanelOpen(n);
         ctx.beginPath();
-        ctx.roundRect(btnX, btnY, btnW, btnH, [5]);
+        ctx.roundRect(btnX, btnY, BTN_W, BTN_H, [5]);
         ctx.fillStyle = open ? "#2f4536" : "#2c2c2c";
         ctx.fill();
         ctx.strokeStyle = open ? "#4c7a5c" : "#454545";
         ctx.lineWidth = 1;
         ctx.stroke();
         ctx.fillStyle = open ? COL.accentOn : COL.accent;
-        drawIcon(ctx, "graph", btnX + 13, btnY + btnH / 2);
+        drawIcon(ctx, "graph", btnX + 13, btnY + BTN_H / 2);
         ctx.fillStyle = open ? COL.accentOn : COL.text;
         ctx.textAlign = "left";
-        ctx.fillText(labelFor(n), btnX + 25, btnY + btnH / 2 + 0.5);
+        ctx.fillText(labelFor(n), btnX + 25, btnY + BTN_H / 2 + 0.5);
 
         ctx.textAlign = "right";
         ctx.fillStyle = COL.textMuted;
-        ctx.fillText(`${doc.runs || 0} runs · ${rows.length} tokens`, w - PAD, btnY + btnH / 2 + 0.5);
-        cursor = btnY + btnH + 4;
+        ctx.fillText(`${doc.runs || 0} runs · ${rows.length} tokens`, w - PAD, btnY + BTN_H / 2 + 0.5);
+        cursor = btnY + BTN_H + 4;
 
         // --- token bars -----------------------------------------------
         ctx.textAlign = "left";
@@ -245,13 +263,20 @@ function makeTokenWidget(node) {
       }
     },
     mouse(event, pos, n) {
+      // Only an actual left click toggles; a hover or a right-click must not.
+      if (event.type !== "pointerdown" && event.type !== "mousedown") return false;
+      if (event.button != null && event.button !== 0) return false;
+      const st = stateOf(n);
       const [mx, my] = pos;
-      // header button hit area (the whole widget is only a few rows tall)
-      if (my >= 0 && my <= HEADER_H + 4 && mx >= PAD && mx <= PAD + 100) {
-        if (event.type === "pointerdown" || event.type === "mousedown") {
-          togglePanel(n);
-          return true;
-        }
+      // `pos` is in the SAME frame as the `y` that draw() was given, so the
+      // button's rectangle has to be compared against that recorded origin.
+      // Testing `my <= HEADER_H + 4` (i.e. as if pos were widget-relative while
+      // nothing recorded the origin) is why the button rendered correctly and
+      // then did nothing when clicked.
+      const top = Number.isFinite(st.widgetY) ? st.widgetY : 0;
+      if (my >= top && my <= top + BTN_H + 2 && mx >= PAD && mx <= PAD + BTN_W) {
+        togglePanel(n);
+        return true;
       }
       return false;
     },
@@ -279,4 +304,4 @@ function fit(ctx, text, maxPx) {
 }
 
 export { makeTokenWidget, widgetHeight, labelFor, drawIcon, fit, UI_NAME,
-  COL, ROW_H, MAX_ROWS, HEADER_H, NOTE_H, FOOT_H, PAD, BAR_W };
+  COL, ROW_H, MAX_ROWS, HEADER_H, NOTE_H, FOOT_H, PAD, BAR_W, BTN_W, BTN_H };

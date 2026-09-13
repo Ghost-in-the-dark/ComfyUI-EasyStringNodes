@@ -267,11 +267,14 @@ node tests/canvas_balance.mjs        # canvas state balance (node front-end)
 node tests/tg_canvas_balance.mjs     # canvas state balance (token graph)
 node tests/tg_layout_test.mjs        # force layout determinism, bounds, hit testing
 node tests/tg_exclude_hidden.mjs     # the exclude input collapses without losing its value
+node tests/tg_widget_click.mjs       # the on-node "show graph" button responds to a click
 ```
 
 `tests/canvas_balance.mjs` drives the on-node widget through every drawing state (rows, presets, filters, category popover, collapsed settings) with a recording 2D context and asserts one invariant: **the context state stack depth after `draw()` equals the depth before it**. The widget draws onto ComfyUI's shared canvas, so a `ctx.restore()` that is not paired with a `ctx.save()` pops the state frame the graph renderer saved for itself; every node and link drawn afterwards then inherits this widget's `fillStyle`, `globalAlpha` and lost transform, and renders blank or as a solid black slab. Counting `grep -c ctx.save()` does not catch this (the same words appear in comments), which is why the check is behavioural. Both commands need no third-party packages and no browser.
 
 `tests/tg_canvas_balance.mjs` additionally fails when two labels would be painted on the same baseline or outside the strip: the token strip is drawn into whatever height ComfyUI grants it, and a node resized by hand can grant far less than `computeSize()` asked for. Two captions landing on one line is a rendering bug even when the save/restore balance is perfect.
+
+`tests/tg_widget_click.mjs` drives `draw()` and `mouse()` with the same origin, the way the front-end does, and asserts the "show graph" button actually toggles the panel. Those two entry points use **different coordinate frames** - `draw()` receives the widget's top in node space while `mouse()` receives a position in that same frame - and the strip once hit-tested as if `pos` were already widget-relative. The result was a button that rendered perfectly and did nothing when clicked, which no test caught because nothing called `mouse()`.
 
 `tests/tg_exclude_hidden.mjs` covers the `exclude` input. Its default value is the fifty-line boilerplate list, and ComfyUI sizes a multiline widget to roughly its content, so a visible `exclude` reserved hundreds of pixels of node body. The node collapses it (the same way `EasyStringNegEditor` hides its data widgets) and the test asserts both halves of that: the height really goes to zero, and the value stays readable and writable through the panel's exclusions drawer.
 
