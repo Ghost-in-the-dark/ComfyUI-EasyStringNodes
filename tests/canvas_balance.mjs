@@ -116,6 +116,12 @@ function mkNode(rows, presets, opts = {}) {
   if (opts.catPickOpen) st.catPickOpen = true;
   if (opts.sortedByFreq) st.sortedByFreq = true;
   if (opts.scroll) st.scroll = opts.scroll;
+  if (opts.presetScroll) st.presetScroll = opts.presetScroll;
+  if (opts.catPopScroll) st.catPopScroll = opts.catPopScroll;
+  if (opts.popHover !== undefined) st.popHover = opts.popHover;
+  if (opts.hoverKey !== undefined) st.hoverKey = opts.hoverKey;
+  if (opts.draggingSb) st.draggingSb = true;
+  if (opts.toast) st.toast = { text: "ticked 12 rows", action: () => {}, label: "undo" };
   return node;
 }
 
@@ -145,6 +151,15 @@ const STATES = [
   ["scrolled deep", () => mkNode(many, PRESETS, { scroll: 25 })],
   ["narrow node 220px", () => mkNode(many, PRESETS, { w: 220 })],
   ["empty rows + popover + collapsed", () => mkNode([], "", { catPickOpen: true, collapsed: true })],
+  ["toast with action button", () => mkNode(many, PRESETS, { toast: true })],
+  ["toast + active category chip", () => mkNode(many, PRESETS, { toast: true, catFilter: "c1" })],
+  ["presets scrolled (arrows shown)", () => mkNode(many, PRESETS, { presetScroll: 3 })],
+  ["popover scrolled + hovered row", () => mkNode(many, PRESETS, { catPickOpen: true, catPopScroll: 2, popHover: 3 })],
+  ["row hovered (hover chip)", () => mkNode(many, PRESETS, { hoverKey: 4 })],
+  ["scrollbar being dragged", () => mkNode(many, PRESETS, { draggingSb: true, scroll: 5 })],
+  ["search + category + only, combined", () => mkNode(many, PRESETS, { search: "row 1", catFilter: "c1", onlyChecked: true })],
+  ["all filters, zero matches", () => mkNode(many, PRESETS, { search: "row", catFilter: "nope", onlyChecked: true })],
+  ["220px + popover + toast", () => mkNode(many, PRESETS, { w: 220, catPickOpen: true, toast: true })],
 ];
 
 const failures = [];
