@@ -1,0 +1,37 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e902d0a3d3c5f # v5
+        with:
+          python-version: "3.11"
+
+      # Canvas state balance: a ctx.restore() without a paired ctx.save() in the
+      # node widget pops the graph renderer's own state frame and makes every
+      # node drawn afterwards render blank or as a black slab. Counting
+      # ctx.save() with grep does not detect it, so this behavioural check is a
+      # required gate. No dependencies, no browser.
+      - name: Canvas state balance (node front-end)
+        run: node tests/canvas_balance.mjs
+
+      - name: Node logic
+        run: python3 tests/test_nodes.py

@@ -12,6 +12,11 @@
 //   esn_lifecycle.js   node setup / refresh / dataset loading
 //   easy_string_neg_editor.js  entry point - extension registration only
 //
+// v1.5.9: fix a missing ctx.save() in the presets section. draw() used to
+//          restore one canvas state frame more than it saved, popping the frame
+//          LiteGraph had saved for itself; every node and link drawn afterwards
+//          inherited this widget's fillStyle/alpha and rendered blank or black.
+//          Guarded by tests/canvas_balance.mjs.
 // v1.5.8: dataset images live in files (row.img is a ref, not base64), the
 //          storage layer can migrate legacy inline data URLs, preset row
 //          checkboxes.

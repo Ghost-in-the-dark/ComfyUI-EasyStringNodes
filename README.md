@@ -215,8 +215,11 @@ To change how many are available, edit \`MAX_INPUTS\` at the top of \`Concatenat
 
 \`\`\`bash
 cd ComfyUI-EasyStringNodes
-python3 tests/test_nodes.py
+python3 tests/test_nodes.py     # node logic
+node tests/canvas_balance.mjs   # canvas state balance (node front-end)
 \`\`\`
+
+\`tests/canvas_balance.mjs\` drives the on-node widget through every drawing state (rows, presets, filters, category popover, collapsed settings) with a recording 2D context and asserts one invariant: **the context state stack depth after \`draw()\` equals the depth before it**. The widget draws onto ComfyUI's shared canvas, so a \`ctx.restore()\` that is not paired with a \`ctx.save()\` pops the state frame the graph renderer saved for itself; every node and link drawn afterwards then inherits this widget's \`fillStyle\`, \`globalAlpha\` and lost transform, and renders blank or as a solid black slab. Counting \`grep -c ctx.save()\` does not catch this (the same words appear in comments), which is why the check is behavioural. Both commands need no third-party packages and no browser.
 
 ## Workflow examples
 

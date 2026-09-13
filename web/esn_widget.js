@@ -751,6 +751,13 @@ function makeListWidget(node) {
       ctx.restore();
 
       // ---- presets section (visible on the node like the old SelectorNeg) ----
+      // Pairs with the ctx.restore() at the end of this block. Removing this
+      // save() (as one revision did) leaves draw() returning a canvas state
+      // stack one level SHORTER than it was handed, which pops the state the
+      // graph renderer had saved for itself: every node and link drawn after
+      // this one then inherits this widget's fillStyle / globalAlpha / lost
+      // transform and renders as a blank or black slab.
+      ctx.save();
       const entries = presetEntries(st.presets);
       const secTop = rowsBottom + PRESET_GAP;
       const secLeft = 12;
