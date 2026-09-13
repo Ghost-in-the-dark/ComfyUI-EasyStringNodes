@@ -33,5 +33,27 @@ jobs:
       - name: Canvas state balance (node front-end)
         run: node tests/canvas_balance.mjs
 
+      # The same gate for the token graph node: its on-node strip draws on the
+      # shared context, and its panel graph must leave its own context balanced.
+      - name: Canvas state balance (token graph)
+        run: node tests/tg_canvas_balance.mjs
+
+      # Force simulation: determinism, in-bounds placement, hit testing and
+      # radius monotonicity. A layout that reshuffles on redraw makes the token
+      # under the pointer move away mid-hover.
+      - name: Token graph layout
+        run: node tests/tg_layout_test.mjs
+
       - name: Node logic
         run: python3 tests/test_nodes.py
+
+      # Token counting: the two counters, co-occurrence weights, exclusions and
+      # that a run is recorded exactly once (IS_CHANGED + analyse must not both
+      # fold the same run).
+      - name: Token graph logic
+        run: python3 tests/test_token_graph.py
+
+      # The panel re-ranks the text being typed in the browser, so its
+      # tokenizer must agree with the python one; this is what stops drift.
+      - name: Tokenizer parity (python vs javascript)
+        run: python3 tests/test_token_parity.py

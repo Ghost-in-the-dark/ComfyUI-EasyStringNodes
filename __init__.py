@@ -14,12 +14,17 @@ from .easy_string_neg_editor import (
     NODE_CLASS_MAPPINGS as neg_editor_mappings,
     NODE_DISPLAY_NAME_MAPPINGS as neg_editor_display,
 )
+from .token_graph_node import (
+    NODE_CLASS_MAPPINGS as token_graph_mappings,
+    NODE_DISPLAY_NAME_MAPPINGS as token_graph_display,
+)
 
 NODE_CLASS_MAPPINGS = {
     **easy_string_mappings,
     **easy_stringV2_mappings,
     **concatenate_mappings,
     **neg_editor_mappings,
+    **token_graph_mappings,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -27,12 +32,21 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **easy_stringV2_display,
     **concatenate_display,
     **neg_editor_display,
+    **token_graph_display,
 }
 
 # Register /easystring/* dataset routes when running inside ComfyUI.
 try:
     from .esn_storage import register_routes as _esn_register
     _esn_register()
+except Exception:
+    pass
+
+# Register /easystring/token_stats routes (the token graph panel reads the
+# accumulated history through them).
+try:
+    from .esn_tokens import register_routes as _tokens_register
+    _tokens_register()
 except Exception:
     pass
 

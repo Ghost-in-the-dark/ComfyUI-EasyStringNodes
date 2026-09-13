@@ -1,0 +1,18 @@
+{
+  "1": {
+    "inputs": {
+      "text": "raccoon, cinematic, dramatic lighting, night, moonlit, stippling, cel shading, vignette, best quality, masterpiece, highly detailed, 8k",
+      "stats_file": "tokens",
+      "reset": false,
+      "window": 3,
+      "top_n": 40,
+      "min_count": 1,
+      "exclude": "best quality\nhigh quality\nhighest quality\nquality\nmasterpiece\nbest\nhighres\nhi res\nhires\nabsurdres\nsharp focus\ndetailed\nhighly detailed\nultra detailed\nhdr\nhdr photo\nultra realistic\nphotorealistic\nrealistic\n8k\n4k\nyear *",
+      "position": "floating"
+    },
+    "class_type": "EasyStringTokenGraph",
+    "_meta": {
+      "title": "Easy String Token Graph - most used tokens"
+    }
+  }
+}

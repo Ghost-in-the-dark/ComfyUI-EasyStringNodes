@@ -29,14 +29,22 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.join(here, "..", "web");
 const tmpRoot = fs.mkdtempSync(path.join(process.env.TMPDIR || "/tmp", "esn-balance-"));
 
-// The modules import ComfyUI's app.js. Link them in a scratch mirror with a
-// minimal stub, so the test stays dependency-free and offline.
+// The modules import ComfyUI's app.js as "../../scripts/app.js". To make that
+// resolve to OUR stub, the copies must live two levels below the stub:
+//
+//   <tmp>/scripts/app.js          <- the stub
+//   <tmp>/pkg/web/esn_widget.js   <- the module   ("../../scripts/app.js")
+//
+// Copying them straight into <tmp>/web/ would resolve to <tmp>/../scripts,
+// i.e. one directory ABOVE the temp root - which used to work only when a
+// stray /tmp/scripts/app.js happened to exist on the machine, and failed with
+// ERR_MODULE_NOT_FOUND on a clean one (including CI).
 fs.mkdirSync(path.join(tmpRoot, "scripts"), { recursive: true });
 fs.writeFileSync(
   path.join(tmpRoot, "scripts", "app.js"),
   'export const app = { graph: { _nodes: [], setDirtyCanvas() {} }, registerExtension() {}, canvas: null };\n',
 );
-const modDir = path.join(tmpRoot, "web");
+const modDir = path.join(tmpRoot, "pkg", "web");
 fs.mkdirSync(modDir, { recursive: true });
 for (const f of fs.readdirSync(webDir)) {
   if (f.endsWith(".js")) fs.copyFileSync(path.join(webDir, f), path.join(modDir, f));
