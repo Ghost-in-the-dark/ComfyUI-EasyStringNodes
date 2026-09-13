@@ -86,6 +86,7 @@ const NOOP = ["beginPath", "fill", "stroke", "fillRect", "rect", "roundRect", "m
 function recordingCtx(file) {
   let depth = 0;
   const events = [];
+  const texts = [];
   const site = () => {
     const frames = new Error().stack.split("\n");
     for (const line of frames) {
@@ -105,8 +106,12 @@ function recordingCtx(file) {
     },
   };
   for (const k of NOOP) ctx[k] = () => {};
+  // record every string and its baseline so the caller can check that no two
+  // visual lines were painted on top of each other
+  ctx.fillText = (s, x, y) => texts.push({ s: String(s), x, y });
+  ctx.strokeText = (s, x, y) => texts.push({ s: String(s), x, y });
   ctx.measureText = (s) => ({ width: String(s).length * 6 });
-  return { ctx, events, depthNow: () => depth };
+  return { ctx, events, texts, depthNow: () => depth };
 }
 
 function mkNode(opts = {}) {
@@ -185,6 +190,17 @@ function buildWidgetStates() {
   seedStats(live, CORPUS);
   states.push(["widget: live preview from the text box", live, { h: 160 }]);
 
+  // A node resized by hand, or a layout pass that has not caught up, hands the
+  // widget far less room than computeSize() asked for. The two bottom captions
+  // ("+N more" and the boilerplate note) used to be positioned independently
+  // and landed on the same line, rendering as unreadable overlapping text.
+  const squeezed = mkNode({});
+  seedStats(squeezed, CORPUS);
+  states.push(["widget: squeezed band, both captions wanted", squeezed, { h: 46 }]);
+  const tiny = mkNode({});
+  seedStats(tiny, CORPUS);
+  states.push(["widget: impossible band (header only)", tiny, { h: 20 }]);
+
   const topOne = mkNode({ exclude: "", topN: 1 });
   seedStats(topOne, CORPUS);
   states.push(["widget: top_n = 1", topOne, { h: 140 }]);
@@ -244,10 +260,30 @@ for (const [label, node, opts] of buildWidgetStates()) {
     threw = e && e.message ? e.message : String(e);
   }
   const delta = rec.depthNow() - depthIn;
+  // Text placement is checked here too: the strip is drawn into whatever band
+  // it is given, and two captions on one baseline are a rendering bug even when
+  // the save/restore balance is perfect.
+  const lines = new Map();
+  for (const b of rec.texts) {
+    const k = Math.round(b.y * 2) / 2;
+    if (!lines.has(k)) lines.set(k, []);
+    lines.get(k).push(b.s);
+  }
+  const ys = [...lines.keys()].sort((a, b) => a - b);
+  let collisions = 0;
+  for (let i = 1; i < ys.length; i++) if (ys[i] - ys[i - 1] < 11) collisions += 1;
+  const bandBottom = 20 + opts.h;
+  const outside = ys.filter((v) => v < 18 || v > bandBottom + 2).length;
   if (delta !== 0 || threw) {
     failures.push({ state: label, delta, threw });
   }
-  results.push({ state: label, delta, threw });
+  if (collisions || outside) {
+    failures.push({
+      state: label, delta, collisions, outside,
+      lines: [...lines.values()].map((v) => v.join(" + ")),
+    });
+  }
+  results.push({ state: label, delta, threw, collisions, outside });
 }
 
 for (const [label, rows, edges, emptyText, opts] of buildGraphStates()) {
@@ -276,7 +312,10 @@ for (const [label, rows, edges, emptyText, opts] of buildGraphStates()) {
 console.log("canvas state balance — depth after draw() must equal depth before");
 for (const r of results) {
   const mark = r.delta === 0 && !r.threw ? "ok  " : "FAIL";
-  console.log(`  ${mark} ${r.state.padEnd(38)} delta=${r.delta}${r.threw ? " threw=" + r.threw : ""}`);
+  const extra = (r.collisions || r.outside)
+    ? `  <-- collisions=${r.collisions} outside=${r.outside}`
+    : "";
+  console.log(`  ${mark} ${r.state.padEnd(38)} delta=${r.delta}${r.threw ? " threw=" + r.threw : ""}${extra}`);
 }
 
 // Static shapes too: comments and dead branches must not be able to hide a

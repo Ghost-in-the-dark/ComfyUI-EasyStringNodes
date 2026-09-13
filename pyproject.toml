@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-EasyStringNodes"
 description = "A set of text-processing nodes for ComfyUI: string/line selection, prompt weights, positive/negative splitting, prompt concatenation and token-use statistics."
-version = "1.6.0"
+version = "1.6.1"
 license = "MIT"
 dependencies = []
 requires-python = ">=3.9"

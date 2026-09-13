@@ -23,6 +23,7 @@ import {
   NODE_CLASS, openPanel, closePanel, isPanelOpen, acceptPayload, applyDock,
 } from "./tg_panel.js";
 import { makeTokenWidget } from "./tg_widget.js";
+import { hideTextWidget, unhideTextWidget } from "./esn_core.js";
 
 // The panel must follow the window when it is docked, and it must not survive
 // the page outliving its nodes; both listeners are installed once.
@@ -63,8 +64,14 @@ function setupTokenNode(node) {
     return;
   }
   node.__tgWidget = widget;
-  // The strip is sized by the widgets themselves; give the node a sane initial
-  // size so the panel's trigger is reachable without resizing by hand.
+  // The exclude list is a 50-line multiline widget by default. Left visible it
+  // claims hundreds of pixels of node body, pushing the token strip to the very
+  // bottom and leaving a tall empty block in the middle of the node - and the
+  // list is edited in the panel anyway. Collapse it to zero height, exactly the
+  // way the pack's other node hides its data widgets.
+  hideExcludeWidget(node);
+  // Give the node a sane initial size so the strip and the panel trigger are
+  // both reachable without resizing by hand.
   try {
     const min = node.computeSize ? node.computeSize() : null;
     if (min) node.size = [Math.max(node.size[0], 300), Math.max(node.size[1], min[1])];
@@ -75,6 +82,28 @@ function setupTokenNode(node) {
       openPanel(node);
     } catch (e) {}
   }
+}
+
+// The `exclude` widget stays in the workflow (it is the node's real input and
+// must keep round-tripping) but is not shown: the panel edits it, and a
+// multiline widget with fifty default lines would otherwise dominate the node.
+function hideExcludeWidget(node) {
+  const w = (node.widgets || []).find((x) => x && x.name === "exclude");
+  if (!w) return false;
+  hideTextWidget(w);
+  node.__tgExcludeHidden = true;
+  return true;
+}
+
+// The panel's "exclusions" drawer is the editor for that input, so the widget
+// has to be reachable for a workflow that wants to edit it in the node body
+// after all; this restores it (used by tests and by any UI that wants it back).
+function showExcludeWidget(node) {
+  const w = (node.widgets || []).find((x) => x && x.name === "exclude");
+  if (!w) return false;
+  unhideTextWidget(w);
+  node.__tgExcludeHidden = false;
+  return true;
 }
 
 function hookNode(node) {
@@ -154,3 +183,8 @@ app.registerExtension({
     };
   },
 });
+
+// Exported so tests/tg_exclude_hidden.mjs can assert the collapse without
+// running a browser: the widget must end up zero-height while keeping its
+// value, because the panel reads and writes that same input.
+export { hideExcludeWidget, showExcludeWidget, setupTokenNode };

@@ -44,6 +44,12 @@ jobs:
       - name: Token graph layout
         run: node tests/tg_layout_test.mjs
 
+      # The `exclude` input is a fifty-line multiline widget; left visible it
+      # reserves hundreds of pixels and leaves the node body blank. The collapse
+      # must zero its height while the panel keeps reading and writing it.
+      - name: Exclude widget collapse
+        run: node tests/tg_exclude_hidden.mjs
+
       - name: Node logic
         run: python3 tests/test_nodes.py
 
