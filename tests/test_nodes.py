@@ -694,6 +694,229 @@ def test_neg_editor_freq_checkbox_mode():
     assert out["ui"]["esn_freq"] == [1, 0]
 
 
+# ---------------- preset_checked: preset ∩ ticked rows -------------------
+
+
+_PRESET_ROWS = json.dumps([
+    {"num": 1, "on": True, "pos": "alpha", "neg": "", "img": ""},
+    {"num": 2, "on": False, "pos": "beta", "neg": "", "img": ""},
+    {"num": 3, "on": True, "pos": "gamma", "neg": "", "img": ""},
+])
+
+
+def test_neg_editor_preset_checked_intersects_ticked():
+    node = EasyStringNegEditor()
+    pos, neg = node.process(
+        rows=_PRESET_ROWS, presets="1: 1 2 3", use_preset=True, preset_line=1,
+        preset_checked=True, apply_weight=False)
+    assert pos == "alpha, gamma", pos
+
+
+def test_neg_editor_preset_without_checked_uses_every_row():
+    """Default (preset_checked False) keeps the pre-existing behavior."""
+    node = EasyStringNegEditor()
+    pos, neg = node.process(
+        rows=_PRESET_ROWS, presets="1: 1 2 3", use_preset=True, preset_line=1,
+        apply_weight=False)
+    assert pos == "alpha, beta, gamma", pos
+
+
+def test_neg_editor_preset_checked_none_ticked_is_empty():
+    node = EasyStringNegEditor()
+    rows = json.dumps([
+        {"num": 1, "on": False, "pos": "alpha", "neg": "", "img": ""},
+        {"num": 2, "on": False, "pos": "beta", "neg": "", "img": ""},
+    ])
+    pos, neg = node.process(
+        rows=rows, presets="1: 1 2", use_preset=True, preset_line=1,
+        preset_checked=True, apply_weight=False)
+    assert pos == "", pos
+    assert neg == "", neg
+
+
+def test_neg_editor_preset_checked_keeps_order_and_duplicates():
+    """Filtering must not reorder or de-duplicate the preset."""
+    node = EasyStringNegEditor()
+    pos, neg = node.process(
+        rows=_PRESET_ROWS, presets="1: 3 1 3 9", use_preset=True, preset_line=1,
+        preset_checked=True, apply_weight=False)
+    assert pos == "gamma, alpha, gamma", pos
+
+
+def test_neg_editor_preset_checked_via_data_file():
+    """The toggle works in dataset-file mode too (rows come from disk)."""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    node = EasyStringNegEditor()
+    tmp = _tempfile.mkdtemp(prefix="esn_test_")
+    old_dir = _esn_storage.DATA_DIR
+    _esn_storage.DATA_DIR = tmp
+    try:
+        rows = [
+            {"num": 1, "on": True, "pos": "alpha", "neg": "", "img": ""},
+            {"num": 2, "on": False, "pos": "beta", "neg": "", "img": ""},
+        ]
+        ok, msg = _esn_storage.save_dataset("pc.json", rows, "1: 1 2")
+        assert ok, msg
+        pos, neg = node.process(
+            rows="[]", presets="", use_preset=True, preset_line=1,
+            preset_checked=True, data_file="pc.json", apply_weight=False)
+        assert pos == "alpha", pos
+    finally:
+        _esn_storage.DATA_DIR = old_dir
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_neg_editor_select_checked_still_wins_over_preset_checked():
+    node = EasyStringNegEditor()
+    pos, neg = node.process(
+        rows=_PRESET_ROWS, presets="1: 1", use_preset=True, preset_line=1,
+        select_checked=True, preset_checked=True, apply_weight=False)
+    assert pos == "alpha, gamma", pos
+
+
+# ---------------- dataset images live in files ---------------------------
+
+
+def test_storage_stores_image_and_rewrites_rows_to_refs():
+    import shutil as _shutil
+    import tempfile as _tempfile
+    tmp = _tempfile.mkdtemp(prefix="esn_img_")
+    old_dir = _esn_storage.DATA_DIR
+    _esn_storage.DATA_DIR = tmp
+    try:
+        # a 1x1 transparent PNG
+        png = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+               "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        ok, msg = _esn_storage.save_dataset(
+            "img.json",
+            [{"num": 1, "on": True, "pos": "a", "neg": "", "img": png}],
+            "1: 1")
+        assert ok, msg
+        # the inline data URL was pulled out into a file ...
+        with open(os.path.join(tmp, "img.json"), "r", encoding="utf-8") as fh:
+            on_disk = json.load(fh)
+        ref = on_disk["rows"][0]["img"]
+        assert ref and not ref.startswith("data:"), ref
+        assert os.path.isfile(os.path.join(tmp, "img.img", ref))
+        # ... and the JSON no longer carries the payload
+        assert "base64" not in json.dumps(on_disk)
+        # loading resolves the ref back into a usable URL
+        data = _esn_storage.load_dataset("img.json")
+        url = data["rows"][0]["img"]
+        assert url.startswith(_esn_storage.IMAGE_ROUTE), url
+        assert "ref=" + ref in url, url
+        raw, mime = _esn_storage.read_image("img.json", ref)
+        assert mime == "image/png" and raw[:4] == b"\x89PNG"
+    finally:
+        _esn_storage.DATA_DIR = old_dir
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_storage_rejects_unsafe_image_refs():
+    import shutil as _shutil
+    import tempfile as _tempfile
+    tmp = _tempfile.mkdtemp(prefix="esn_img_")
+    old_dir = _esn_storage.DATA_DIR
+    _esn_storage.DATA_DIR = tmp
+    try:
+        _esn_storage.save_dataset("s.json", [], "")
+        for bad in ["../secret.png", "a/b.png", "x..y.png", "evil.exe", "", None]:
+            assert _esn_storage.safe_image_ref(bad) is None, bad
+            assert _esn_storage.image_path("s.json", bad) is None, bad
+            raw, mime = _esn_storage.read_image("s.json", bad)
+            assert raw is None and mime is None
+        # a row pointing outside the folder is dropped, not followed
+        ok, _ = _esn_storage.save_dataset(
+            "s.json", [{"pos": "a", "img": "../secret.png"}], "")
+        data = _esn_storage.load_dataset("s.json")
+        assert data["rows"][0]["img"] == ""
+    finally:
+        _esn_storage.DATA_DIR = old_dir
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_storage_prunes_only_unreferenced_and_old_images():
+    import shutil as _shutil
+    import tempfile as _tempfile
+    tmp = _tempfile.mkdtemp(prefix="esn_img_")
+    old_dir = _esn_storage.DATA_DIR
+    _esn_storage.DATA_DIR = tmp
+    try:
+        png = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+               "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        _esn_storage.save_dataset("p.json", [{"pos": "a", "img": png}], "")
+        ref_a = _esn_storage.list_image_refs("p.json")[0]
+        # a second, freshly written image (as the editor writes on upload)
+        ref_b = _esn_storage.store_image_data_url("p.json", png)
+        assert ref_b and ref_b != ref_a
+        # a fresh file is NEVER pruned: it may belong to an unsaved editor
+        _esn_storage.prune_images("p.json", [], min_age=600)
+        assert ref_b in _esn_storage.list_image_refs("p.json")
+        # with the age window disabled an unreferenced image goes away,
+        # while a referenced one survives
+        _esn_storage.prune_images("p.json", [{"pos": "a", "img": ref_b}], min_age=0)
+        refs = _esn_storage.list_image_refs("p.json")
+        assert ref_b in refs and ref_a not in refs, refs
+    finally:
+        _esn_storage.DATA_DIR = old_dir
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_storage_keeps_image_through_load_save_round_trip():
+    """A client that loaded the resolved URL must not lose the picture."""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    tmp = _tempfile.mkdtemp(prefix="esn_img_")
+    old_dir = _esn_storage.DATA_DIR
+    _esn_storage.DATA_DIR = tmp
+    try:
+        png = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+               "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        ok, _ = _esn_storage.save_dataset("rt.json", [{"pos": "a", "img": png}], "")
+        assert ok
+        # first save pulled the picture out of the row
+        loaded = _esn_storage.load_dataset("rt.json")
+        ref = _esn_storage.ref_from_value(loaded["rows"][0]["img"])
+        assert ref, loaded["rows"][0]["img"]
+        # saving exactly what load_dataset returned keeps the same picture
+        ok, _ = _esn_storage.save_dataset("rt.json", loaded["rows"], "")
+        assert ok
+        again = _esn_storage.load_dataset("rt.json")
+        assert _esn_storage.ref_from_value(again["rows"][0]["img"]) == ref
+        # and pruning must not delete it
+        _esn_storage.prune_images("rt.json", again["rows"], min_age=0)
+        assert ref in _esn_storage.list_image_refs("rt.json")
+    finally:
+        _esn_storage.DATA_DIR = old_dir
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_storage_save_is_atomic_and_leaves_no_tmp():
+    import shutil as _shutil
+    import tempfile as _tempfile
+    tmp = _tempfile.mkdtemp(prefix="esn_img_")
+    old_dir = _esn_storage.DATA_DIR
+    _esn_storage.DATA_DIR = tmp
+    try:
+        ok, msg = _esn_storage.save_dataset("t.json", [{"pos": "x"}], "1: 1")
+        assert ok, msg
+        assert os.listdir(tmp) == ["t.json"], os.listdir(tmp)
+        # a rejected name writes nothing at all
+        for bad in ["noext", "bad!name.json", "", None]:
+            ok, msg = _esn_storage.save_dataset(bad, [], "")
+            assert not ok and "invalid" in msg, bad
+        # a traversal attempt is neutralised: the basename lands INSIDE the
+        # dataset folder, never above it
+        ok, msg = _esn_storage.save_dataset("../evil.json", [], "")
+        assert ok and msg == "evil.json", (ok, msg)
+        assert "evil.json" in os.listdir(tmp)
+        assert not os.path.exists(os.path.join(os.path.dirname(tmp), "evil.json"))
+    finally:
+        _esn_storage.DATA_DIR = old_dir
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------------------------------------------------------------- runner
 
 if __name__ == "__main__":

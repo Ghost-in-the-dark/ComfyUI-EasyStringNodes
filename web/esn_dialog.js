@@ -10,7 +10,9 @@ import {
   state, cleanRows, syncFromWidget, commitRows, commitPresets,
   commitDataFile, countPresets, normalizePresetText, parseOldRows,
   dsList, dsLoad, dsSave, readImageFile, RENDER_CHUNK,
-  bumpDataRev, dataWidget, categoryCounts,
+  bumpDataRev, dataWidget, categoryCounts, findWidget,
+  dsPutImage, imageUrlFor, presetRowEntries, presetRowTargets,
+  presetTickStats, DATA_URL_PREFIX, app,
 } from "./esn_core.js";
 import {
   sortRowsByFreq, sortRowsByNum, resizeNode, loadDatasetInto,
@@ -154,6 +156,13 @@ function mkField(labelText, value, placeholder) {
   return { col, ta };
 }
 
+// The node's python 'preset_checked' toggle (see esn_widget.js for the
+// canvas switch that writes the same widget).
+function presetCheckedWidget(node) {
+  const w = findWidget(node, "preset_checked");
+  try { return !!(w && w.value); } catch (e) { return false; }
+}
+
 function buildRowCard(row, idx, api) {
   const card = document.createElement("div");
   card.__esnRow = row; // image/num bound regardless of reorder
@@ -287,9 +296,12 @@ function buildRowCard(row, idx, api) {
     background: "#151515 center/contain no-repeat", cursor: "pointer",
   });
   thumb.title = "Click or drop an image";
+  // The thumb shows whatever form row.img currently has: a data URL (widget
+  // mode) or a stored image ref resolved through the dataset image route.
   const setThumb = () => {
-    thumb.style.backgroundImage = row.img ? "url(" + row.img + ")" : "";
-    thumb.textContent = row.img ? "" : "no image";
+    const url = imageUrlFor(api.node, row.img);
+    thumb.style.backgroundImage = url ? "url(" + url + ")" : "";
+    thumb.textContent = url ? "" : "no image";
   };
   setThumb();
 
@@ -301,7 +313,24 @@ function buildRowCard(row, idx, api) {
     const file = files && files[0];
     const dataUrl = await readImageFile(file);
     if (dataUrl) {
-      row.img = dataUrl;
+      // In dataset-file mode the picture is uploaded ONCE and the row keeps
+      // only its file name: the dataset JSON stays small, and a checkbox
+      // click no longer rewrites every image in it.
+      if (api.file()) {
+        thumb.textContent = "saving…";
+        const ref = await dsPutImage(api.file(), dataUrl);
+        if (ref) {
+          row.img = ref;
+          if (api.bumpImgVersion) api.bumpImgVersion();
+        } else {
+          // the server refused the upload: keep the image inline rather than
+          // silently dropping what the user dropped in
+          row.img = dataUrl;
+          if (api.note) api.note("Could not store the image file - it is kept inside the dataset JSON.", true);
+        }
+      } else {
+        row.img = dataUrl;
+      }
       setThumb();
     }
   };
@@ -318,6 +347,19 @@ function buildRowCard(row, idx, api) {
   clearImg.textContent = "Remove";
   Object.assign(clearImg.style, { cursor: "pointer", background: "transparent", border: "1px solid #633", borderRadius: "4px", color: "#f99", fontSize: "11px", padding: "4px 8px", minHeight: "24px" });
   clearImg.addEventListener("click", () => { row.img = ""; setThumb(); });
+  // legacy datasets keep their images INSIDE the row as base64 data URLs;
+  // saving such a dataset pulls every picture out into a file (see
+  // esn_storage.save_dataset), so warn about the size while it is still inline
+  if (typeof row.img === "string" && row.img.slice(0, DATA_URL_PREFIX.length) === DATA_URL_PREFIX) {
+    const legacy = document.createElement("span");
+    legacy.textContent = "inline";
+    legacy.title = "This image is stored inside the dataset JSON as base64. Saving the dataset moves it into its own file next to the .json.";
+    Object.assign(legacy.style, {
+      fontSize: "10px", color: "#ffcc66", border: "1px solid #6a5320",
+      borderRadius: "3px", padding: "0 4px", cursor: "help",
+    });
+    imgCol.appendChild(legacy);
+  }
 
   imgCol.appendChild(thumb);
   imgCol.appendChild(fileInput);
@@ -467,6 +509,23 @@ function showDialog(node, editIndex, initialTab) {
   rowsPanel.appendChild(list);
 
   const rowsApi = {
+    // the node (cards resolve stored image refs / upload new pictures
+    // against this node's dataset file)
+    node: node,
+    // dataset file currently loaded in the node, "" when rows live in the
+    // workflow widget (then images must stay inline data URLs)
+    file() {
+      return (state(node).file || "").trim();
+    },
+    // a freshly uploaded image must not be served from the browser cache
+    // under a ref that an earlier dataset revision also used
+    bumpImgVersion() {
+      const st = state(node);
+      st.imgVersion = (st.imgVersion || 0) + 1;
+    },
+    note(msg, err) {
+      statusText(msg, !!err);
+    },
     // called by a card when its category changes, so the filter <select>
     // offers that category right away (finding: the list only refreshed on
     // add / delete / import, so a freshly typed category was not selectable)
@@ -758,9 +817,131 @@ function showDialog(node, editIndex, initialTab) {
   refreshCnt();
   pTool.appendChild(pImp);
   pTool.appendChild(pCnt);
+
+  // The node's 'preset_checked' toggle, editable from the same place the
+  // presets are: it decides whether the checkboxes below actually narrow the
+  // preset (on) or the preset uses all of its rows regardless (off, default).
+  const pcWrap = document.createElement("label");
+  Object.assign(pcWrap.style, {
+    display: "flex", alignItems: "center", gap: "6px",
+    minHeight: "24px", color: "#ddd", fontSize: "12px", cursor: "pointer",
+    marginLeft: "auto",
+  });
+  const pcBox = document.createElement("input");
+  pcBox.type = "checkbox";
+  pcBox.checked = presetCheckedWidget(node);
+  Object.assign(pcBox.style, { width: "16px", height: "16px", margin: "0", accentColor: "#3a7bd5" });
+  pcBox.title = "On: a preset may only use rows that are also ticked below";
+  const pcLab = document.createElement("span");
+  pcLab.textContent = "preset: ticked rows only";
+  pcWrap.appendChild(pcBox);
+  pcWrap.appendChild(pcLab);
+  pcBox.addEventListener("change", () => {
+    const w = findWidget(node, "preset_checked");
+    if (!w) return;
+    w.value = pcBox.checked;
+    if (typeof w.callback === "function") w.callback(w.value);
+    if (typeof app.graph?.setDirtyCanvas === "function") app.graph.setDirtyCanvas(true, true);
+    refreshPresetStats();
+  });
+  pTool.appendChild(pcWrap);
+
+  // ---- per-row checkboxes next to every row a preset points at -------------
+  // A preset is a list of row numbers, and the numbers are exactly what the
+  // checkbox column of the row list toggles. Showing them here lets a preset
+  // be trimmed without hunting each number down in the row list; the boxes
+  // are the SAME flag (row.on), so both views stay in sync.
+  const pRowsBox = document.createElement("div");
+  Object.assign(pRowsBox.style, {
+    display: "flex", flexDirection: "column", gap: "6px",
+    maxHeight: "34vh", overflowY: "auto",
+    border: "1px solid #333", borderRadius: "6px", padding: "8px",
+  });
+  const pRowsNote = document.createElement("div");
+  Object.assign(pRowsNote.style, { color: "#999", fontSize: "11px", lineHeight: "1.5" });
+  let refreshPresetStats = () => {}; // defined below, used by the switch above
+
+  function renderPresetRows() {
+    pRowsBox.innerHTML = "";
+    const entries = presetRowEntries(pTa.value, rows);
+    const stats = presetTickStats(pTa.value, rows);
+    if (!entries.length) {
+      const empty = document.createElement("div");
+      empty.textContent = "No preset lines yet - add one above (e.g. \u201c1: 1 2 3\u201d).";
+      Object.assign(empty.style, { color: "#888", fontSize: "12px" });
+      pRowsBox.appendChild(empty);
+      return;
+    }
+    let lastText = null;
+    for (const e of entries) {
+      if (e.text !== lastText) {
+        lastText = e.text;
+        const head = document.createElement("div");
+        head.textContent = e.text;
+        Object.assign(head.style, {
+          fontFamily: "monospace", fontSize: "12px", color: "#cfe",
+          borderTop: "1px solid #333", paddingTop: "6px", whiteSpace: "pre-wrap",
+        });
+        pRowsBox.appendChild(head);
+      }
+      const line = document.createElement("label");
+      Object.assign(line.style, {
+        display: "flex", alignItems: "center", gap: "8px",
+        minHeight: "24px", cursor: e.row ? "pointer" : "default",
+        paddingLeft: "10px", color: e.row ? "#ddd" : "#777", fontSize: "12px",
+      });
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!e.row && e.row.on !== false;
+      cb.disabled = !e.row;
+      cb.title = e.row
+        ? "Tick to keep row #" + e.num + " in this preset"
+        : "Preset number " + e.num + " matches no row";
+      Object.assign(cb.style, { width: "16px", height: "16px", margin: "0", accentColor: "#3a7bd5" });
+      const lab = document.createElement("span");
+      lab.textContent = "#" + e.num + "  " + (e.row
+        ? ((e.row.pos || e.row.neg || "(empty)").slice(0, 70))
+        : "(no such row)");
+      Object.assign(lab.style, { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+      cb.addEventListener("change", () => {
+        if (!e.row) return;
+        e.row.on = cb.checked;
+        const stn = state(node);
+        stn.rows = rows;
+        // keep the live card (if the Rows tab already rendered it) in step
+        const card = cardEls.get(e.row);
+        if (card) {
+          const box = card.querySelector('input[type="checkbox"]');
+          if (box && box.checked !== cb.checked) box.checked = cb.checked;
+        }
+        refreshPresetStats();
+      });
+      line.appendChild(cb);
+      line.appendChild(lab);
+      pRowsBox.appendChild(line);
+    }
+    refreshPresetStats();
+  }
+
+  refreshPresetStats = function () {
+    const stats = presetTickStats(pTa.value, rows);
+    pcBox.checked = presetCheckedWidget(node);
+    pCnt.textContent = countPresets(pTa.value) + " preset(s)";
+    pRowsNote.textContent =
+      stats.presets + " preset(s) \u00b7 " + stats.ticked + " of " + stats.targets +
+      " row reference(s) ticked" +
+      (stats.missing ? " \u00b7 " + stats.missing + " number(s) match no row" : "") +
+      ". These are the same checkboxes as in the Rows tab; they only change " +
+      "what a preset uses while \u201cpreset: ticked rows only\u201d is on.";
+  };
+
+  pTa.addEventListener("input", () => { refreshCnt(); renderPresetRows(); });
+
   presetsPanel.appendChild(pInfo);
   presetsPanel.appendChild(pTool);
   presetsPanel.appendChild(pTa);
+  presetsPanel.appendChild(pRowsNote);
+  presetsPanel.appendChild(pRowsBox);
 
   pImp.addEventListener("click", () => {
     const cur = pTa.value || "";
@@ -769,6 +950,7 @@ function showDialog(node, editIndex, initialTab) {
     const merged = normalizePresetText(cur + (cur ? "\n" : "") + pv);
     pTa.value = merged;
     refreshCnt();
+    renderPresetRows();
   });
 
   // ---------------- Data file panel ----------------
@@ -923,6 +1105,9 @@ function showDialog(node, editIndex, initialTab) {
       panels[k].style.display = k === name ? "flex" : "none";
       setActive(buttons[k], k === name);
     });
+    // the preset rows mirror the row list (numbers, ticked flags), which the
+    // Rows tab may have changed while this panel was hidden
+    if (name === "presets") renderPresetRows();
   };
   tabRowsB.addEventListener("click", () => showTab("rows"));
   tabPresetsB.addEventListener("click", () => showTab("presets"));

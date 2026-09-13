@@ -8,7 +8,7 @@
 
 import { app } from "../../scripts/app.js";
 import {
-  state, presetEntries, NODE_CLASS,
+  state, presetEntries, NODE_CLASS, imageUrlFor,
   MAX_DRAWN_ROWS, WHEEL_STEP, PRESET_WHEEL_STEP,
   HEADER_H, SEARCH_H, TOOL_H, STATUS_H, SCROLL_H, MAX_DRAWN_PRESETS,
 } from "./esn_core.js";
@@ -48,12 +48,15 @@ function hideHover() {
   if (hoverEl) hoverEl.style.display = "none";
 }
 
-function showHover(clientX, clientY, row) {
+function showHover(clientX, clientY, row, node) {
   const el = ensureHoverEl();
   el.innerHTML = "";
-  if (row && row.img) {
+  // row.img is either a data URL (widget mode) or a stored image ref; the
+  // helper turns both into something an <img> can load
+  const imgSrc = row && row.img ? imageUrlFor(node, row.img) : "";
+  if (imgSrc) {
     const img = document.createElement("img");
-    img.src = row.img;
+    img.src = imgSrc;
     Object.assign(img.style, { display: "block", maxWidth: "300px", maxHeight: "220px", borderRadius: "4px", margin: "0 auto 4px" });
     el.appendChild(img);
   }
@@ -175,7 +178,7 @@ function onCanvasPointerMove(e) {
   const key = (hit.node.id ?? hit.node) + ":" + hit.index;
   if (key !== hoverKey) {
     hoverKey = key;
-    showHover(e.clientX, e.clientY, hit.row);
+    showHover(e.clientX, e.clientY, hit.row, hit.node);
   } else {
     const el = ensureHoverEl();
     if (el.style.display !== "none") {

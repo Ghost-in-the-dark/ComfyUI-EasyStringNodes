@@ -8,6 +8,7 @@
 import { app } from "../../scripts/app.js";
 import {
   state, cleanRows, commitRows, presetEntries, dsLoad, dumpRows,
+  findWidget,
   ROWS_NAME, PRESETS_NAME, DATA_NAME, REV_NAME,
   MAX_DRAWN_ROWS, ROW_H, HEADER_H, SEARCH_H, TOOL_H, STATUS_H, SCROLL_H,
   MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
@@ -295,6 +296,11 @@ function resizeNode(node) {
     // select_checked) contribute nothing and only the hidden data widgets
     // remain above the list.
     const collapsed = settingsCollapsed(node);
+    // The canvas carries its own "preset: ticked only" switch (the
+    // 'preset_checked' widget) inside the presets section header, so that one
+    // widget does NOT add a 26 px row above the list while it is drawn there -
+    // it would otherwise leave a blank band where the hidden widget sat.
+    const canvasOwnsPresetChecked = !!findWidget(node, "preset_checked");
     let py = 0;
     if (node.widgets) {
       for (const wdg of node.widgets) {
@@ -303,6 +309,7 @@ function resizeNode(node) {
         if (nm === ROWS_NAME || nm === PRESETS_NAME ||
             nm === DATA_NAME || nm === REV_NAME || nm === "preset_trigger") continue;
         if (collapsed && ADV_WIDGETS.indexOf(nm) !== -1) continue;
+        if (nm === "preset_checked" && canvasOwnsPresetChecked) continue;
         py += 26;
       }
     }

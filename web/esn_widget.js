@@ -9,11 +9,11 @@ import { app } from "../../scripts/app.js";
 import {
   state, clampText, clampTextToWidth, findWidget, hideRowsWidget, syncFromWidget,
   commitRows, countPresets, presetEntries, presetChoice, categoryCounts,
-  stepPresetChoice, UI_NAME,
+  stepPresetChoice, UI_NAME, parseNumberSpec, presetTickStats,
   settingsCollapsed, applySettingsCollapsed, toggleSettingsCollapsed,
   MAX_DRAWN_ROWS, WHEEL_STEP, ROW_H, HEADER_H, SEARCH_H, TOOL_H, STATUS_H, SCROLL_H,
   FREQ_W, SB_W, SB_HIT_W, MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
-  PRESET_SCROLL_H, PRESET_CTRL_H, PRESET_EMPTY_H, COL,
+  PRESET_SCROLL_H, PRESET_CTRL_H, PRESET_EMPTY_H, PRESET_BOX_W, COL,
 } from "./esn_core.js";
 import {
   rowCount, rebuildView, toggleFreqSort, toggleOnlyChecked, tickVisibleRows,
@@ -96,6 +96,45 @@ function drawToolIcon(ctx, kind, cx, cy, on) {
     ctx.stroke();
   }
   ctx.restore();
+}
+
+// The row numbers of a preset line ("3: 9 10 11" -> "9 10 11"), or the whole
+// line when it has no "N:" head.
+function presetLineBody(text) {
+  const line = String(text == null ? "" : text);
+  const ci = line.indexOf(":");
+  return ci >= 0 ? line.slice(ci + 1) : line;
+}
+
+// The row a preset number points at: an explicit row num wins, then the
+// 1-based position - the same rule Python's _resolve_row_number() uses, so a
+// box on the node always toggles the row the run would actually pick.
+function resolveRowByNumber(rows, num) {
+  for (const row of rows || []) {
+    if (row && row.num != null && row.num === num) return row;
+  }
+  if (num >= 1 && num <= (rows || []).length) return rows[num - 1];
+  return null;
+}
+
+// The node's python 'preset_checked' toggle: when on, a preset may only use
+// rows that are also ticked with the checkbox. Read from the widget (not from
+// node state) so the canvas control and the python panel never disagree.
+function presetChecked(node) {
+  const w = findWidget(node, "preset_checked");
+  try { return !!(w && w.value); } catch (e) { return false; }
+}
+
+// Write that toggle back into the python widget.
+function setPresetChecked(node, on) {
+  const w = findWidget(node, "preset_checked");
+  if (!w) return false;
+  try {
+    w.value = !!on;
+    if (typeof w.callback === "function") w.callback(w.value);
+  } catch (e) {}
+  try { app.graph?.setDirtyCanvas?.(true, true); } catch (e) {}
+  return true;
 }
 
 // Chevron button used by the rows and presets scroll bands: a 28x22 housing
@@ -315,6 +354,7 @@ function makeListWidget(node) {
       st.presetUse = null;
       st.presetPrev = null;
       st.presetNext = null;
+      st.presetChecked = null;
       st.presetListArea = null;
       st.sbZone = null;
       st.statusAction = null;
@@ -648,15 +688,25 @@ function makeListWidget(node) {
         ctx.textBaseline = "middle";
         const upOn = st.scroll > 0;
         const dnOn = st.scroll < maxScroll;
-        // 28x24 arrow buttons on both sides of the hint text
-        drawArrowButton(ctx, cx - 46, bandY + 1, 28, SCROLL_H - 2, "up", upOn);
-        drawArrowButton(ctx, cx + 18, bandY + 1, 28, SCROLL_H - 2, "down", dnOn);
-        st.scrollUp = { x: cx - 46, y: bandY + 1, w: 28, h: SCROLL_H - 2 };
-        st.scrollDown = { x: cx + 18, y: bandY + 1, w: 28, h: SCROLL_H - 2 };
+        // 28x24 arrow buttons flush to the band's edges, so the hint text in
+        // the middle has the whole width between them (arrows at cx +/- 46
+        // left only 36 px and a longer hint ran underneath them)
+        const arrowY = bandY + 1;
+        const arrowH = SCROLL_H - 2;
+        const bandL = 12; // same left margin the rows / presets sections use
+        drawArrowButton(ctx, bandL, arrowY, 28, arrowH, "up", upOn);
+        drawArrowButton(ctx, fullW - 12 - 28, arrowY, 28, arrowH, "down", dnOn);
+        st.scrollUp = { x: bandL, y: arrowY, w: 28, h: arrowH };
+        st.scrollDown = { x: fullW - 12 - 28, y: arrowY, w: 28, h: arrowH };
         const leftCount = total - (st.scroll + shown);
         ctx.fillStyle = COL.textMuted;
         ctx.font = "10px sans-serif";
-        ctx.fillText(leftCount > 0 ? (leftCount + " more below") : "wheel to scroll", cx, mid);
+        ctx.fillText(
+          clampTextToWidth(
+            ctx,
+            leftCount > 0 ? (leftCount + " more below") : "wheel to scroll",
+            fullW - 24 - 2 * 28 - 16),
+          cx, mid);
         rowsBottom = ry + SCROLL_H;
 
         // drag scrollbar on the right edge of the drawn rows (visual track is
@@ -705,21 +755,17 @@ function makeListWidget(node) {
       const secTop = rowsBottom + PRESET_GAP;
       const secLeft = 12;
       const secW = fullW - 24;
+      // The presets section carries a "ticked rows only" switch (the python
+      // 'preset_checked' toggle) in its header corner, so the flag can be set
+      // where the presets are, without reaching for the settings block.
       // section header (click → dialog Presets tab)
       st.presetsHeader = { top: secTop, bottom: secTop + PRESET_HDR_H };
-      ctx.save();
       ctx.fillStyle = "rgba(60,40,20,0.35)";
       ctx.fillRect(secLeft, secTop, secW, PRESET_HDR_H);
-      ctx.fillStyle = COL.accentPreset;
-      ctx.font = "bold 10px sans-serif";
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      ctx.fillText(
-        clampTextToWidth(ctx,
-          "Presets (" + entries.length + ") " +
-            (entries.length ? "\u00b7 click a line to open, use/arrows to pick" : "\u00b7 click to add"),
-          secW - 10),
-        secLeft + 6, secTop + PRESET_HDR_H / 2);
+      // title + state line + the switch are all drawn after the presets are
+      // known (below), so the two text rows and the switch never collide
       let pBottom = secTop + PRESET_HDR_H;
       if (entries.length) {
         const choice = presetChoice(n);
@@ -740,35 +786,95 @@ function makeListWidget(node) {
           const isActive = activeIdx >= 0 && en.num === entries[activeIdx].num;
           ctx.fillStyle = isActive ? "rgba(30,120,70,0.35)" : ((st.presetScroll + i) % 2 ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.2)");
           ctx.fillRect(secLeft, rowTop, secW, PRESET_H);
-          ctx.fillStyle = isActive ? "#8f8" : COL.text;
           ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
           // active-preset marker drawn as a triangle, not a text glyph
           if (isActive) {
+            ctx.fillStyle = "#8f8";
             const my = rowTop + PRESET_H / 2;
             ctx.beginPath();
-            ctx.moveTo(secLeft + 5, my - 4);
-            ctx.lineTo(secLeft + 10, my);
-            ctx.lineTo(secLeft + 5, my + 4);
+            ctx.moveTo(secLeft + 4, my - 4);
+            ctx.lineTo(secLeft + 9, my);
+            ctx.lineTo(secLeft + 4, my + 4);
             ctx.closePath();
             ctx.fill();
           }
-          const lineTxt = clampTextToWidth(ctx, en.text, secW - 20);
-          ctx.fillText(lineTxt, secLeft + 14, rowTop + PRESET_H / 2);
-          st.presetRects.push({ top: rowTop, bottom: rowBottom, num: en.num });
+          // Per-row checkboxes: a preset line names row NUMBERS, so every
+          // number gets the same tick box a row has in the list above - the
+          // SAME row.on flag, so both views agree. The boxes give the numbers
+          // a direct click target (no dialog) and drive the node's optional
+          // 'preset_checked' mode (preset ∩ ticked).
+          const my = rowTop + PRESET_H / 2;
+          ctx.font = "bold 10px monospace";
+          const head = String(en.num) + ":";
+          ctx.fillStyle = isActive ? "#8f8" : COL.text;
+          ctx.fillText(head, secLeft + (isActive ? 14 : 6), my);
+          let bx = secLeft + (isActive ? 14 : 6) + ctx.measureText(head).width + 8;
+          const nums = parseNumberSpec(presetLineBody(en.text));
+          const boxes = [];
+          ctx.lineWidth = 1;
+          for (let k = 0; k < nums.length; k++) {
+            const hit = resolveRowByNumber(st.rows, nums[k]);
+            const nt = String(nums[k]);
+            ctx.font = "9px monospace";
+            // FIXED slot width for every box: content-sized slots let a
+            // 2-digit number shift everything after it a couple of px right,
+            // which breaks the column the eye scans across lines
+            const bw = PRESET_BOX_W;
+            if (bx + bw > secLeft + secW - 6) {
+              // no room for another box: say how many are left
+              ctx.fillStyle = COL.textMuted;
+              ctx.fillText("+" + (nums.length - k), bx + 4, my);
+              break;
+            }
+            const cxB = bx + 6;
+            const on = !!(hit && hit.on);
+            if (on) {
+              ctx.fillStyle = COL.accentTick;
+              ctx.beginPath();
+              ctx.roundRect(cxB - 5, my - 5, 10, 10, [2]);
+              ctx.fill();
+              ctx.strokeStyle = "#08243a";
+              ctx.lineWidth = 1.6;
+              ctx.beginPath();
+              ctx.moveTo(cxB - 2.4, my + 0.2);
+              ctx.lineTo(cxB - 0.6, my + 2.4);
+              ctx.lineTo(cxB + 2.6, my - 2.4);
+              ctx.stroke();
+              ctx.lineWidth = 1;
+            } else {
+              ctx.strokeStyle = hit ? "#b4b4b4" : "rgba(255,255,255,0.18)";
+              ctx.lineWidth = 1.1;
+              ctx.beginPath();
+              ctx.roundRect(cxB - 4.5, my - 4.5, 9, 9, [2]);
+              ctx.stroke();
+              ctx.lineWidth = 1;
+            }
+            ctx.fillStyle = on ? COL.text : (hit ? COL.textDim : COL.textEmpty);
+            ctx.font = "9px monospace";
+            ctx.fillText(nt, bx + 13, my);
+            boxes.push({ num: nums[k], x: bx - 1, w: bw, hit: hit });
+            bx += bw;
+          }
+          st.presetRects.push({ top: rowTop, bottom: rowBottom, num: en.num, boxes: boxes });
           pBottom = rowBottom;
         }
         if (entries.length > MAX_DRAWN_PRESETS) {
           const bandY = pBottom + 1;
           const bh = PRESET_SCROLL_H - 2;
-          drawArrowButton(ctx, cx - 46, bandY, 28, bh, "up", st.presetScroll > 0);
-          drawArrowButton(ctx, cx + 18, bandY, 28, bh, "down", st.presetScroll < maxPScroll);
-          st.presetUp = { x: cx - 46, y: bandY, w: 28, h: bh };
-          st.presetDown = { x: cx + 18, y: bandY, w: 28, h: bh };
+          drawArrowButton(ctx, secLeft, bandY, 28, bh, "up", st.presetScroll > 0);
+          drawArrowButton(ctx, fullW - 12 - 28, bandY, 28, bh, "down", st.presetScroll < maxPScroll);
+          st.presetUp = { x: secLeft, y: bandY, w: 28, h: bh };
+          st.presetDown = { x: fullW - 12 - 28, y: bandY, w: 28, h: bh };
           ctx.fillStyle = COL.textMuted;
           ctx.font = "10px sans-serif";
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          ctx.fillText((st.presetScroll + 1) + "-" + (st.presetScroll + shownP) + " / " + entries.length, cx, bandY + bh / 2);
+          ctx.fillText(
+            clampTextToWidth(ctx,
+              (st.presetScroll + 1) + "-" + (st.presetScroll + shownP) + " / " + entries.length,
+              fullW - 24 - 2 * 28 - 16),
+            cx, bandY + bh / 2);
           pBottom += PRESET_SCROLL_H;
           st.presetListArea = { top: secTop + PRESET_HDR_H, bottom: pBottom };
         }
@@ -829,13 +935,77 @@ function makeListWidget(node) {
             ctx.fillText(b.label, bx + b.w / 2, btnY + btnH / 2);
           }
           ctx.globalAlpha = 1;
-          if (b.key === "use") st.presetUse = zone;
+          if (b.key === "pchk") st.presetChecked = zone;
+          else if (b.key === "use") st.presetUse = zone;
           else if (b.key === "prev") st.presetPrev = zone;
           else st.presetNext = zone;
         }
         bx -= 6;
         pBottom += PRESET_CTRL_H;
+        // The preset-ticked switch lives in the presets section header, right
+        // of the title: a real checkbox drawn from paths (no emoji) in a 26 px
+        // target, wired to the python 'preset_checked' widget, plus a state
+        // line under the title so the count is always readable.
+        const pcOn = presetChecked(n);
+        const pcStats = presetTickStats(st.presets, st.rows);
+        const pcW = 26;
+        const pcH = PRESET_HDR_H - 6;
+        const pcX = secLeft + secW - pcW - 4;
+        const pcY = secTop + 3;
+        const pcMx = pcX + pcW / 2;
+        const pcMy = pcY + pcH / 2;
+        // the title is truncated to the space left of the switch so the two
+        // can never overlap at any node width
+        const pTitle = "Presets (" + entries.length + ")" +
+          (entries.length ? " · click a line to open" : " · click to add");
+        // the toolbar / control-row buttons leave textAlign on "center";
+        // without this reset the header text is drawn centred on its own
+        // left edge and runs off the node
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.font = "bold 10px sans-serif";
+        ctx.fillStyle = COL.accentPreset;
+        ctx.fillText(clampTextToWidth(ctx, pTitle, pcX - secLeft - 12),
+                     secLeft + 6, secTop + 10);
+        ctx.font = "9px sans-serif";
+        ctx.fillStyle = pcOn ? COL.warn : COL.textMuted;
+        ctx.fillText(
+          clampTextToWidth(ctx, pcOn
+            ? ("tick box ON \u00b7 preset uses " + pcStats.ticked + "/" + pcStats.targets + " ticked rows" +
+               (pcStats.missing ? " \u00b7 " + pcStats.missing + " unmatched" : ""))
+            : "tick box off \u00b7 preset uses all of its rows",
+            pcX - secLeft - 12),
+          secLeft + 6, secTop + 22);
+        ctx.fillStyle = pcOn ? "rgba(120,90,20,0.5)" : "rgba(255,255,255,0.07)";
+        ctx.strokeStyle = pcOn ? "rgba(255,200,80,0.8)" : "rgba(255,255,255,0.35)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(pcX + 0.5, pcY + 0.5, pcW - 1, pcH - 1, [3]);
+        ctx.fill();
+        ctx.stroke();
+        if (pcOn) {
+          ctx.fillStyle = COL.accentTick;
+          ctx.beginPath();
+          ctx.roundRect(pcMx - 5, pcMy - 5, 10, 10, [2]);
+          ctx.fill();
+          ctx.strokeStyle = "#08243a";
+          ctx.lineWidth = 1.7;
+          ctx.beginPath();
+          ctx.moveTo(pcMx - 2.6, pcMy + 0.3);
+          ctx.lineTo(pcMx - 0.7, pcMy + 2.5);
+          ctx.lineTo(pcMx + 2.8, pcMy - 2.5);
+          ctx.stroke();
+        } else {
+          ctx.strokeStyle = "#b4b4b4";
+          ctx.lineWidth = 1.1;
+          ctx.beginPath();
+          ctx.roundRect(pcMx - 4.5, pcMy - 4.5, 9, 9, [2]);
+          ctx.stroke();
+        }
+        ctx.lineWidth = 1;
+        st.presetChecked = { x: pcX - 2, y: pcY - 2, w: pcW + 4, h: pcH + 4, key: "pchk" };
       } else {
+        st.presetChecked = null;
         ctx.fillStyle = COL.textEmpty;
         ctx.font = "11px sans-serif";
         ctx.textAlign = "center";
@@ -1096,6 +1266,10 @@ function makeListWidget(node) {
         }
       }
       // control buttons on the bottom control row
+      if (hitP(st.presetChecked)) {
+        setPresetChecked(node, !presetChecked(node));
+        return true;
+      }
       if (hitP(st.presetUse)) {
         const useW = findWidget(node, "use_preset");
         if (useW) {
@@ -1114,9 +1288,21 @@ function makeListWidget(node) {
         openEditor(node, null, "presets");
         return true;
       }
-      // clicking a preset line opens the dialog on the Presets tab too
+      // clicking a preset line opens the dialog on the Presets tab too, but a
+      // click on one of its row checkboxes toggles that row instead (the same
+      // row.on flag the row list uses)
       for (const pr of st.presetRects) {
         if (y >= pr.top - 1 && y <= pr.bottom + 1) {
+          for (const box of pr.boxes || []) {
+            if (x >= box.x - 2 && x <= box.x + box.w) {
+              if (box.hit) {
+                box.hit.on = !box.hit.on;
+                commitRows(node, st.rows); // dataset-aware (file vs widget)
+                app.graph?.setDirtyCanvas?.(true, true);
+              }
+              return true; // a dead box (number matches no row) still swallows
+            }
+          }
           openEditor(node, null, "presets");
           return true;
         }

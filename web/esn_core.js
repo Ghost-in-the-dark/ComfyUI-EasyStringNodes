@@ -12,6 +12,9 @@
 //   esn_lifecycle.js   node setup / refresh / dataset loading
 //   easy_string_neg_editor.js  entry point - extension registration only
 //
+// v1.5.8: dataset images live in files (row.img is a ref, not base64), the
+//          storage layer can migrate legacy inline data URLs, preset row
+//          checkboxes.
 // v1.5.7: category filtering, >=24 px targets, tokenised canvas palette,
 //          width-aware text truncation.
 // v1.5.6: refactor — data layer extracted from the monolithic editor file.
@@ -32,7 +35,7 @@ const UI_NAME = "rows_list";
 // vertical body stack, so it is left visible on purpose.
 const ADV_WIDGETS = [
   "line_numbers", "select_all", "use_preset", "preset_line",
-  "weight", "apply_weight", "add_break", "select_checked",
+  "weight", "apply_weight", "add_break", "select_checked", "preset_checked",
 ];
 const MAX_DRAWN_ROWS = 8; // rows visible on the node (toolbar row above takes 28 px)
 const WHEEL_STEP = 3;
@@ -56,7 +59,8 @@ const SB_HIT_W = 24; // px of the scrollbar's pointer-capture band
 // presets section drawn below the row list on the node canvas
 const MAX_DRAWN_PRESETS = 4; // preset lines visible on the node
 const PRESET_H = 18; // px per preset line
-const PRESET_HDR_H = 20; // px for the "Presets" section header
+const PRESET_BOX_W = 30; // px slot per row checkbox on a preset line (fixed: aligned columns)
+const PRESET_HDR_H = 30; // px for the presets header (title + tick-box state line)
 const PRESET_SCROLL_H = 24; // px of the presets scroll band (28x24 arrow buttons)
 const PRESET_CTRL_H = 26; // px of the presets control row (24 px buttons)
 const PRESET_EMPTY_H = 22; // px of the "no presets yet" line
@@ -84,6 +88,12 @@ const COL = {
 };
 const IMG_MAX_EDGE = 384;
 const IMG_QUALITY = 0.82;
+// Image refs: in dataset-file mode an uploaded picture is stored as a file
+// next to the dataset and the row keeps only its file name; in widget mode
+// (no dataset file) it stays a data URL inside the workflow. A data URL is
+// recognised by its prefix, everything else is treated as a stored ref.
+const DATA_URL_PREFIX = "data:image/";
+const IMG_ROUTE = "/easystring/data/image";
 const NL = String.fromCharCode(10); // newline without backslash escapes
 const CR = String.fromCharCode(13);
 
@@ -111,6 +121,28 @@ function isDigits(s) {
     if (c < "0" || c > "9") return false;
   }
   return true;
+}
+
+// JS twin of utils.parse_spec: "1", "1,3", "2-4", "1 3 7" -> [1,3,2,3,4,...].
+// Used to walk a preset line's row numbers in the UI. Invalid tokens are
+// skipped (the Python side raises there; the UI must never break on them).
+function parseNumberSpec(spec) {
+  const out = [];
+  const text = String(spec == null ? "" : spec).trim();
+  if (!text) return out;
+  for (const token of text.split(/[,\s]+/)) {
+    if (!token) continue;
+    const range = /^(\d+)\s*-\s*(\d+)$/.exec(token);
+    if (range) {
+      let a = parseInt(range[1], 10);
+      let b = parseInt(range[2], 10);
+      if (a > b) { const t = a; a = b; b = t; }
+      for (let n = a; n <= b && out.length < 5000; n++) out.push(n);
+      continue;
+    }
+    if (isDigits(token)) out.push(parseInt(token, 10));
+  }
+  return out;
 }
 
 function parseRows(raw) {
@@ -212,6 +244,7 @@ function state(node) {
       loadedFile: null, // name of the file already loaded into rows/presets
       fileLoading: false,
       loadFailed: false,
+      imgVersion: 0, // cache-buster for stored image refs (bumped per upload)
     };
   }
   return node.__esn;
@@ -394,6 +427,58 @@ function persistFileNow(node) {
   });
 }
 
+// Rows of one preset as the UI shows them: [{num, text, row}] where `text` is
+// the preset line and `row` is the row it points at (or null when its number
+// matches nothing - the line is still listed, exactly as the preset text
+// reads, but it has no checkbox to expose).
+function presetRowEntries(presets, rows) {
+  const out = [];
+  for (const en of presetEntries(presets)) {
+    let line = "";
+    const parts = String(en.text).split(":");
+    if (parts.length > 1) line = parts.slice(1).join(":").trim();
+    for (const n of parseNumberSpec(line)) {
+      let hit = null;
+      for (const row of rows || []) {
+        if (row && row.num != null && row.num === n) { hit = row; break; }
+      }
+      if (!hit && n >= 1 && n <= (rows || []).length) hit = rows[n - 1];
+      out.push({ num: n, text: en.text, row: hit });
+    }
+  }
+  return out;
+}
+
+// Distinct row targets of a piece of preset text: [{num, row}]. Two rows that
+// share a number are one target (the same row the run would pick).
+function presetRowTargets(text, rows) {
+  const seen = new Set();
+  const out = [];
+  for (const e of presetRowEntries(text, rows)) {
+    if (!e.row || seen.has(e.row)) continue;
+    seen.add(e.row);
+    out.push(e);
+  }
+  return out;
+}
+
+// How many presets exist, how many of their row references resolve to a row
+// and how many of those are ticked - plus the references that match NOTHING
+// (a typo in a preset is worth saying out loud, not hiding). This is the
+// status line the node / the Presets tab show for the checkbox feature.
+function presetTickStats(presets, rows) {
+  const total = presetEntries(presets).length;
+  let targets = 0;
+  let ticked = 0;
+  let missing = 0;
+  for (const e of presetRowEntries(presets, rows)) {
+    if (!e.row) { missing++; continue; }
+    targets++;
+    if (e.row.on !== false) ticked++;
+  }
+  return { presets: total, targets: targets, ticked: ticked, missing: missing };
+}
+
 function bumpDataRev(node) {
   try {
     const w = revWidget(node);
@@ -540,6 +625,14 @@ function applySettingsCollapsed(node, collapsed) {
     if (collapsed) hideTextWidget(w);
     else unhideTextWidget(w);
   }
+  // The canvas owns its own switches for two of these settings: the settings
+  // gear in the list header, and the "preset: ticked rows only" box in the
+  // presets header. When the block is EXPANDED only the gear's widget is
+  // needed on the python panel (the other would double the same control), and
+  // when it is COLLAPSED the canvas keeps drawing both, so either way the
+  // canvas-owned widget stays hidden.
+  const pc = findWidget(node, "preset_checked");
+  if (pc) hideTextWidget(pc);
 }
 
 function toggleSettingsCollapsed(node) {
@@ -811,6 +904,37 @@ async function readImageFile(file) {
   }
 }
 
+// Store one uploaded (already downscaled) image for a dataset file and return
+// the REF to keep in row.img, or "" when the server refused it.
+//
+// The dataset JSON must not carry image bytes: a row used to hold a base64
+// data URL, so every checkbox click re-sent and rewrote the whole dataset
+// (~10 MB for 200 images). The picture is uploaded once, stored as a file
+// next to the dataset, and only its name is saved in the row.
+function dsPutImage(file, dataUrl) {
+  if (!file || !dataUrl) return Promise.resolve("");
+  return fetch(IMG_ROUTE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file: file, data: dataUrl }),
+  })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => (j && j.ok && j.ref ? String(j.ref) : ""))
+    .catch(() => "");
+}
+
+// A value usable in CSS url(...) / <img src>: stored refs get the image URL
+// with a cache-busting mtime; data URLs and full URLs pass through.
+function imageUrlFor(node, value) {
+  const img = String(value == null ? "" : value);
+  if (!img) return "";
+  if (img.slice(0, 5) === "data:" || /^(https?:|\/)/i.test(img)) return img;
+  const st = state(node);
+  if (!st.file) return ""; // a bare ref without a dataset file cannot resolve
+  return IMG_ROUTE + "?file=" + encodeURIComponent(st.file) +
+    "&ref=" + encodeURIComponent(img) + "&v=" + (st.imgVersion || 0);
+}
+
 export {
   app,
   // widget/column names
@@ -819,20 +943,22 @@ export {
   // layout constants
   MAX_DRAWN_ROWS, WHEEL_STEP, PRESET_WHEEL_STEP, RENDER_CHUNK,
   ROW_H, HEADER_H, SEARCH_H, FREQ_W, SB_W, SB_HIT_W,
-  MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
+  MAX_DRAWN_PRESETS, PRESET_H, PRESET_BOX_W, PRESET_HDR_H, PRESET_GAP,
   TOOL_H, STATUS_H, SCROLL_H, PRESET_SCROLL_H, PRESET_CTRL_H, PRESET_EMPTY_H,
   COL,
-  IMG_MAX_EDGE, IMG_QUALITY, NL, CR,
+  IMG_MAX_EDGE, IMG_QUALITY, NL, CR, DATA_URL_PREFIX, IMG_ROUTE,
   // helpers
-  isDigits, parseRows, cleanRows, dumpRows, clampText, clampTextToWidth, state,
+  isDigits, parseNumberSpec,
+  parseRows, cleanRows, dumpRows, clampText, clampTextToWidth, state,
   findWidget, rowsWidget, presetsWidget, dataWidget, widgetRawValue,
   hideTextWidget, unhideTextWidget, hideRowsWidget, syncFromWidget,
   persistFileNow, scheduleFilePersist, bumpDataRev,
   commitRows, commitPresets, commitDataFile,
   settingsCollapsed, applySettingsCollapsed, toggleSettingsCollapsed,
-  countPresets, presetEntries, categoryCounts, presetChoice, stepPresetChoice,
+  countPresets, presetEntries, presetRowEntries, presetRowTargets,
+  presetTickStats, categoryCounts, presetChoice, stepPresetChoice,
   setPresetChoice, normalizePresetText,
   parseOldLine, parseOldRows, indexOfTopLevelDash,
   dsList, dsLoad, dsSave,
-  fileToDataUrl, downscaleDataUrl, readImageFile,
+  fileToDataUrl, downscaleDataUrl, readImageFile, dsPutImage, imageUrlFor,
 };

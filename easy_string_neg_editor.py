@@ -12,9 +12,13 @@ Each "row" is {num?, cat?, on?, pos, neg, img}:
             rows without this field (legacy data) count as ticked.
   * pos   - positive prompt text
   * neg   - negative prompt text
-  * img   - optional image, stored in the workflow JSON as a downscaled
-            data URL so the workflow stays self-contained. The image is a
-            UI aid (preview on hover); this Python module never loads it.
+  * img   - optional image reference. In dataset-file mode it is the file
+            name inside the dataset's "<name>.img" folder (the front-end
+            uploads the picture once and stores only this reference, so
+            saving a dataset no longer rewrites megabytes of base64); in
+            widget mode it is still a downscaled data URL, so the workflow
+            stays self-contained. The image is a UI aid (preview on hover);
+            this Python module never reads it.
   * freq  - optional usage counter (int >= 0, default 0). The Python side
             bumps it once per selected row on every run and sends the new
             counters back through the "ui" channel; the front-end persists
@@ -177,6 +181,19 @@ class EasyStringNegEditor:
                                    "overrides line_numbers and presets.",
                     },
                 ),
+                "preset_checked": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "label_on": "preset: ticked only",
+                        "label_off": "preset: all its rows",
+                        "tooltip": "On: a preset may only use rows that are "
+                                   "also ticked with the checkbox in the "
+                                   "editor, so a tick is a per-row veto "
+                                   "inside the chosen preset. Off: the preset "
+                                   "decides on its own (default).",
+                    },
+                ),
                 "data_file": (
                     "STRING",
                     {
@@ -223,7 +240,8 @@ class EasyStringNegEditor:
     CATEGORY = "Text Processing"
     DESCRIPTION = ("Positive/negative builder with a visual row editor, "
                    "old-data import, categories, presets, checkbox pick "
-                   "and image hover previews.")
+                   "(rows and, optionally, inside a preset) and image hover "
+                   "previews.")
     # parsing
     # ------------------------------------------------------------------
     @staticmethod
@@ -371,7 +389,15 @@ class EasyStringNegEditor:
         # numbers that match nothing simply select no row (empty output)
         return chosen
 
-    def _select_preset(self, rows, presets_value, preset_line):
+    def _select_preset(self, rows, presets_value, preset_line,
+                       ticked_only=False):
+        """Rows of one preset.
+
+        With ``ticked_only`` (the 'preset_checked' toggle) the preset's row
+        list is intersected with the ticked rows, so the checkbox works as a
+        per-row veto INSIDE the preset. Numbers that match nothing select no
+        row, and an empty preset is an empty selection, not an error.
+        """
         if not rows:
             raise ValueError(
                 "EasyStringNegEditor: no rows defined - click 'Add / Edit "
@@ -387,7 +413,7 @@ class EasyStringNegEditor:
         chosen = []
         for n in numbers:
             row = self._resolve_row_number(rows, n)
-            if row is not None:
+            if row is not None and (not ticked_only or row["on"]):
                 chosen.append(row)
         # preset numbers that match nothing simply select no row
         return chosen
@@ -398,7 +424,7 @@ class EasyStringNegEditor:
     def process(self, rows, presets="", line_numbers="", select_all=True,
                 use_preset=False, preset_line=1, select_checked=False,
                 data_file="", data_rev=0, weight=1.0, apply_weight=True,
-                add_break=False, preset_trigger=True):
+                add_break=False, preset_trigger=True, preset_checked=False):
         if preset_trigger is False or preset_trigger == 0 or (
             isinstance(preset_trigger, str)
             and preset_trigger.strip().lower() in ("0", "false", "no", "off")
@@ -425,7 +451,11 @@ class EasyStringNegEditor:
             chosen = self._select_rows(parsed, select_all, line_numbers,
                                        select_checked=True)
         elif use_preset:
-            chosen = self._select_preset(parsed, presets, preset_line)
+            # preset_checked narrows the preset to its ticked rows; with the
+            # (default) preset_checked=False a preset picks its rows itself,
+            # so existing workflows keep their exact behavior
+            chosen = self._select_preset(parsed, presets, preset_line,
+                                         ticked_only=bool(preset_checked))
         else:
             chosen = self._select_rows(parsed, select_all, line_numbers)
 
