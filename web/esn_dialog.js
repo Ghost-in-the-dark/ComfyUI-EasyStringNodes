@@ -580,7 +580,7 @@ function showDialog(node, editIndex, initialTab) {
     return (String(row.num != null ? row.num : "") + " " + rc + " " + row.pos + " " + row.neg).toLowerCase().indexOf(q) !== -1;
   }
 
-  function renderChunk(extra) {
+  function renderChunk(extra, skipFill) {
     const want = Math.min(viewRows.length, renderedCount + RENDER_CHUNK + (extra || 0));
     let frag = document.createDocumentFragment();
     let idx = renderedCount;
@@ -598,8 +598,14 @@ function showDialog(node, editIndex, initialTab) {
     }
     renderedCount = idx;
     if (idx > 0) list.appendChild(frag);
-    // if the container still has free space, keep filling
-    if (renderedCount < viewRows.length && list.scrollHeight <= list.clientHeight + 4) {
+    // if the container still has free space, keep filling.
+    //
+    // Reading scrollHeight forces the browser to lay the list out, so a caller
+    // that appends many chunks in a row must pass skipFill: otherwise every
+    // chunk re-lays out a list that keeps growing, which turns one "show me the
+    // last row" into quadratic work (measured: 9.3s for a 2000-row list).
+    if (!skipFill && renderedCount < viewRows.length &&
+        list.scrollHeight <= list.clientHeight + 4) {
       renderChunk(0);
     }
   }
@@ -659,35 +665,101 @@ function showDialog(node, editIndex, initialTab) {
     applyFilter();
   });
 
+  // Make a freshly created row visible and put the caret in its first field.
+  //
+  // The list renders in windows of RENDER_CHUNK cards, so a row far down the
+  // list has no card element yet and there is nothing to scroll to or focus.
+  // Building the cards up to it is what makes "scroll to the new row" mean
+  // anything: without it `list.scrollTop = list.scrollHeight` stops at the
+  // bottom of the rendered window, not at the end of the list.
+  //
+  // Building a card costs roughly a millisecond, so doing all of it in one go
+  // froze the dialog on a long list (measured in Chromium: 2.4s for the last row
+  // of 2000). The work is therefore sliced by a time budget: each slice stops
+  // after REVEAL_BUDGET_MS, scrolls the list down to what exists so far so the
+  // build is visible, and continues on the next animation frame. A short list
+  // finishes in the first slice, so nothing changes for the common case. Where
+  // there is no animation frame scheduler (the unit tests), the loop just runs
+  // to completion, which keeps the behaviour synchronous and deterministic.
+  const REVEAL_BUDGET_MS = 12;
+  function nowMs() {
+    return (typeof performance !== "undefined" && performance.now)
+      ? performance.now() : Date.now();
+  }
+  function scheduleFrame(fn) {
+    const w = typeof window !== "undefined" ? window : null;
+    if (w && typeof w.requestAnimationFrame === "function") {
+      w.requestAnimationFrame(fn);
+      return true;
+    }
+    return false;
+  }
+  function revealCard(row) {
+    if (!dialog) return null; // the dialog was closed while we were building
+    const i = viewRows.indexOf(row);
+    if (i === -1) return null; // filtered out: nothing to reveal
+    const finish = () => {
+      const card = cardEls.get(row);
+      if (!card) return null;
+      // the new row is the last one, so the end of the list is where it is
+      list.scrollTop = list.scrollHeight;
+      if (typeof card.scrollIntoView === "function") {
+        // a card taller than the viewport would still be cut off by the line
+        // above; this only nudges the list the rest of the way
+        try { card.scrollIntoView({ block: "nearest" }); } catch (e) {}
+      }
+      const ta = card.querySelector("textarea");
+      if (ta && typeof ta.focus === "function") ta.focus();
+      return card;
+    };
+    for (;;) {
+      if (renderedCount > i) return finish();
+      const start = renderedCount;
+      const t0 = nowMs();
+      // skipFill: the "keep filling while there is free space" probe reads
+      // scrollHeight, which forces a layout of everything appended so far.
+      // Doing that once per chunk while appending the whole list is quadratic.
+      while (renderedCount <= i && renderedCount < viewRows.length &&
+             nowMs() - t0 < REVEAL_BUDGET_MS) {
+        const before = renderedCount;
+        renderChunk(0, true);
+        if (renderedCount === before) break; // renderChunk could not advance
+      }
+      if (renderedCount > i) return finish();
+      if (renderedCount === start) return null; // cannot make progress at all
+      if (!scheduleFrame(() => { revealCard(row); })) continue; // no scheduler
+      list.scrollTop = list.scrollHeight; // follow the build down
+      return null; // the rest happens on the following frames
+    }
+  }
+
   addBtn.addEventListener("click", () => {
-    // The new row goes to the TOP of the list, not the bottom.
+    // The new row goes to the END of the list.
     //
-    // Appending put it at the end of a list that can be thousands of rows long,
-    // and this list renders windowed: applyFilter() rebuilds only the first
-    // RENDER_CHUNK cards, so the new row's card did not exist, the focus() call
-    // was a no-op, and `list.scrollTop = list.scrollHeight` only reached the
-    // bottom of the rendered window - not the real end. Measured on a 2000-row
-    // list: the new row sat 10211px below the viewport and nothing was focused,
-    // so the user had to scroll the whole list to find the row they just made.
+    // It must NOT go to the top: a row with no explicit # is addressed by its
+    // 1-based position, so inserting above the others renumbers every existing
+    // row and silently changes what presets and line_numbers select. Measured
+    // through the python node: a preset "1: 1 2" over three unnumbered rows
+    // returned "alpha, beta", and returned only "alpha" once a row was
+    // inserted above them. Appending leaves every existing position intact.
     //
-    // The filters are cleared first: with a search or category filter active the
-    // new row could be filtered straight out, and the user would again see
-    // nothing. Adding at the top also matches how a new row is used - it is
-    // almost always the one being worked on right now - and the row's own
-    // # (orig) number is untouched, so presets and line_numbers still resolve
-    // through it exactly as before.
+    // The original complaint was the scrolling, not the position. The list
+    // renders in windows of RENDER_CHUNK cards, so the appended row had no
+    // card, the focus() call was a no-op, and `list.scrollTop = list.scrollHeight`
+    // stopped at the bottom of the rendered window instead of the end of the
+    // list. revealCard() builds the cards up to the new row first, so it is
+    // shown and focused without the user scrolling for it.
     const row = { num: null, cat: catSel.value || "", on: false, pos: "", neg: "", img: "" };
-    rows.unshift(row);
+    rows.push(row);
     rebuildCats();
+    // Clear the filters: with a search or category filter active the new row
+    // could be filtered straight out, and the user would again see nothing.
     searchInp.value = "";
     catSel.value = "";
     setCategoryFilter(node, "");
     applyFilter();
-    list.scrollTop = 0;
-    // The row is first and unfiltered, so applyFilter() has just built its card.
-    const card = cardEls.get(row);
-    const ta = card && card.querySelector("textarea");
-    if (ta && typeof ta.focus === "function") ta.focus();
+    // The row is unfiltered, so applyFilter() has just put it in viewRows.
+    revealCard(row);
   });
 
   // ---------------- import modal (old data) ----------------

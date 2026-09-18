@@ -1,34 +1,34 @@
-// "+ Add row" must put the new row where the user can see it.
+// "+ Add row" must append the row AND show it, without the user scrolling.
 //
 // WHY THIS EXISTS
 // ---------------
 // Reported from ComfyUI: pressing "+ Add row" in the rows dialog left the user
 // scrolling to the very end of the list to find the row they had just created.
 //
-// Two things combined to cause that, and both are reproduced here:
+// The cause was NOT the position of the row. The list renders WINDOWED:
+// applyFilter() builds at most RENDER_CHUNK (60) cards and appends more only as
+// the container is scrolled. An appended row therefore had no card element at
+// all, so `cardEls.get(row)` returned undefined, the focus() call was skipped,
+// and `list.scrollTop = list.scrollHeight` reached the bottom of the *rendered
+// window* - not the end of the list. Measured on a 2000-row list (headless
+// Chromium, real web/esn_dialog.js): 60 of 2001 cards existed, the new row sat
+// 10211px below the viewport, and document.activeElement was <body>.
 //
-//   1. The handler appended the row (`rows.push`) to the END of a list that can
-//      hold thousands of rows.
-//   2. The list renders WINDOWED: applyFilter() builds at most RENDER_CHUNK (60)
-//      cards and appends more only as the container is scrolled. So the new
-//      row's card did not exist, `cardEls.get(row)` returned undefined, the
-//      focus() call was skipped, and `list.scrollTop = list.scrollHeight` only
-//      reached the bottom of the *rendered window* - not the real end.
-//
-// Measured on a 2000-row list (headless Chromium, real web/esn_dialog.js): the
-// new row sat 10211px below the viewport, nothing was focused, and 60 of 2001
-// cards existed. The row is now inserted at the TOP, which additionally matches
-// how a new row is used - it is almost always the one being worked on next.
+// So the fix is to build the cards up to the new row and then scroll to it. The
+// row itself must stay at the END, which is asserted here as the primary
+// property: a row with no explicit # is addressed by its 1-based POSITION, so
+// inserting above the others renumbers every existing row and silently changes
+// what presets and line_numbers select. Measured through the python node: a
+// preset "1: 1 2" over three unnumbered rows returned "alpha, beta", and
+// returned only "alpha" once a row was inserted above them. A revision of this
+// dialog did insert at the top and broke exactly that; this test fails it.
 //
 // The test drives the REAL showDialog() and clicks the REAL buttons; it does not
 // reimplement the dialog or call an internal helper. A DOM shim is used because
-// CI has no browser, and it models the one behaviour the bug depends on: the
-// list is a scroller whose content is taller than its viewport, so renderChunk
-// stops after one chunk, and clearing innerHTML drops focus that was inside it.
-//
-// The last check is the safety property that makes the top insertion acceptable:
-// every existing row keeps its own # (orig) number, so presets and
-// line_numbers still resolve through those numbers exactly as before.
+// CI has no browser, and it models the two behaviours the bug depends on: the
+// list is a scroller whose content is taller than its viewport (so renderChunk
+// stops after one chunk), and scrollTop is clamped to the scrollable range the
+// way a browser clamps it.
 //
 // Run:  node tests/esn_add_row.mjs
 // Exit: 0 pass, 1 on any failure.
@@ -69,6 +69,7 @@ class El {
     this.dataset = {};
     this._listeners = {};
     this._text = null;
+    this._scrollTop = 0;
     this.value = "";
     this.checked = false;
     this.type = "";
@@ -77,12 +78,24 @@ class El {
     this.className = "";
     this.files = [];
     this.rows = 0;
-    this.scrollTop = 0;
   }
   // a scroller whose content is taller than the viewport: this is what makes
   // renderChunk() stop after one chunk instead of building every card
   get clientHeight() { return VIEWPORT; }
   get scrollHeight() { return this.children.length * CARD_H; }
+  get scrollTop() { return this._scrollTop; }
+  // a browser clamps scrollTop to the scrollable range; without this the test
+  // would accept a scroll position no browser can actually reach
+  set scrollTop(v) {
+    const max = Math.max(0, this.scrollHeight - this.clientHeight);
+    const n = Number(v);
+    this._scrollTop = Math.min(Math.max(0, Number.isFinite(n) ? n : 0), max);
+  }
+  // where this card sits in its container
+  get offsetTop() {
+    if (!this.parentNode) return 0;
+    return this.parentNode.children.indexOf(this) * CARD_H;
+  }
   get firstChild() { return this.children[0] || null; }
   get nextSibling() {
     if (!this.parentNode) return null;
@@ -260,9 +273,10 @@ const widgetValue = (node, name) => node.widgets.find((x) => x.name === name).va
 const findList = () => all(document.body, (el) => el.style.overflowY === "auto" && el.style.maxHeight === "56vh")[0] || null;
 const findButton = (label) => all(document.body, (el) => el.tagName === "BUTTON" && el.textContent.trim() === label)[0] || null;
 
-console.log("\n\"+ Add row\" puts the new row at the top\n");
+console.log("\n\"+ Add row\" appends the row at the end and shows it\n");
 
 const node = mkNode();
+const originalSaved = JSON.parse(widgetValue(node, "rows"));
 openEditor(node, null, "rows");
 
 const list = findList();
@@ -270,7 +284,7 @@ check("the rows list exists", !!list);
 if (!list) process.exit(1);
 
 // --- the windowed rendering that caused the bug is really reproduced -------
-check("the list renders only one window of cards", list.children.length === RENDER_CHUNK,
+check("the list starts with only one window of cards", list.children.length === RENDER_CHUNK,
   `${list.children.length} cards for ${N_ROWS} rows, RENDER_CHUNK=${RENDER_CHUNK}`);
 check("the list is far taller than its viewport", list.scrollHeight > list.clientHeight,
   `scrollHeight ${list.scrollHeight} vs clientHeight ${list.clientHeight}`);
@@ -281,40 +295,62 @@ check("the \"+ Add row\" button exists", !!addBtn);
 if (!addBtn) process.exit(1);
 addBtn.click();
 
-const firstCard = list.children[0];
-const firstRow = firstCard && firstCard.__esnRow;
-check("a new row was added", firstRow && firstRow.num == null && firstRow.pos === "" && firstRow.neg === "",
-  JSON.stringify(firstRow && { num: firstRow.num, pos: firstRow.pos }));
-check("it is the FIRST row of the list", !!(firstRow && firstRow.num == null),
-  `first card holds #${firstRow && firstRow.num}`);
-check("the list is scrolled to the top, so no scrolling is needed",
-  list.scrollTop === 0, `scrollTop=${list.scrollTop}`);
-check("nothing had to be scrolled past", list.children.length >= 1 && list.children[0] === firstCard);
+// --- 1. the row is at the END, so no existing row is renumbered ------------
+const lastCard = list.children[list.children.length - 1];
+const lastRow = lastCard && lastCard.__esnRow;
+check("a new empty row was added", !!lastRow && lastRow.num == null && lastRow.pos === "" && lastRow.neg === "",
+  JSON.stringify(lastRow && { num: lastRow.num, pos: lastRow.pos }));
+check("it is the LAST row of the list", !!(lastRow && lastRow.num == null),
+  `last card holds #${lastRow && lastRow.num}`);
+check("the row before it is still the original final row",
+  !!(lastCard && list.children[list.children.length - 2] &&
+     list.children[list.children.length - 2].__esnRow.num === 1000 + N_ROWS - 1),
+  "an existing row was displaced");
+
+// --- 2. it is visible, without the user scrolling -------------------------
+check("every card up to the new row was built", list.children.length === N_ROWS + 1,
+  `${list.children.length} cards, expected ${N_ROWS + 1}`);
+const visibleTop = list.scrollTop;
+const visibleBottom = list.scrollTop + list.clientHeight;
+const cardTop = lastCard ? lastCard.offsetTop : -1;
+const cardBottom = cardTop + CARD_H;
+check("the list was scrolled to its end", visibleBottom >= list.scrollHeight - 1,
+  `visibleBottom=${visibleBottom}, scrollHeight=${list.scrollHeight}`);
+check("the new row is inside the visible area",
+  cardTop >= visibleTop && cardBottom <= visibleBottom,
+  `card [${cardTop}, ${cardBottom}] vs visible [${visibleTop}, ${visibleBottom}]`);
 
 // focus: the caret must be in the new row's first field, ready to type
 const focused = document.activeElement;
 const focusedTa = focused && focused.tagName === "TEXTAREA" ? focused : null;
 check("the new row's first field has focus", !!focusedTa,
   `activeElement is ${focused && focused.tagName}`);
-check("focus is inside the card just added", !!(focusedTa && firstCard && firstCard.contains(focusedTa)));
+check("focus is inside the card just added", !!(focusedTa && lastCard && lastCard.contains(focusedTa)));
 
-// --- Save persists the new order ------------------------------------------
+// --- 3. Save keeps every original row exactly where it was ----------------
 const saveBtn = findButton("Save");
 check("the Save button exists", !!saveBtn);
 if (saveBtn) saveBtn.click();
 
 const saved = JSON.parse(widgetValue(node, "rows"));
 check("all rows are saved", saved.length === N_ROWS + 1, `${saved.length} rows`);
-check("the new row is saved FIRST", saved[0].num === null && saved[0].pos === "",
-  `saved[0] = ${JSON.stringify({ num: saved[0].num, pos: saved[0].pos })}`);
-// the safety property that makes a top insertion acceptable: an existing row
-// keeps the # its presets and line_numbers address it by
-check("the existing rows kept their original #",
-  saved.slice(1).every((r, i) => r.num === 1000 + i),
-  "numbers were renumbered or dropped");
-check("the original first row is still addressed by its #",
-  saved.slice(1)[0].num === 1000 && saved.slice(1)[0].pos === "row 0",
-  JSON.stringify(saved.slice(1)[0]));
+check("the new row is saved LAST", saved[saved.length - 1].num === null && saved[saved.length - 1].pos === "",
+  `saved[last] = ${JSON.stringify({ num: saved[saved.length - 1].num, pos: saved[saved.length - 1].pos })}`);
+
+// THE regression this test exists for: positional addressing means the order of
+// the existing rows is what presets and line_numbers resolve against, so not one
+// of them may move or change. A top insertion fails here.
+const existing = saved.slice(0, N_ROWS);
+const unchanged = existing.every((r, i) =>
+  r.num === originalSaved[i].num && r.pos === originalSaved[i].pos && r.cat === originalSaved[i].cat);
+check("every existing row kept its position, # and content", unchanged,
+  (() => {
+    const i = existing.findIndex((r, k) => r.num !== originalSaved[k].num || r.pos !== originalSaved[k].pos);
+    return i === -1 ? "" : `first difference at index ${i}: ` +
+      JSON.stringify(existing[i]) + " vs " + JSON.stringify(originalSaved[i]);
+  })());
+check("the original first row is still row 1", saved[0].num === 1000 && saved[0].pos === "row 0",
+  JSON.stringify({ num: saved[0].num, pos: saved[0].pos }));
 
 // --------------------------------------------------------------------------
 fs.rmSync(tmpRoot, { recursive: true, force: true });
