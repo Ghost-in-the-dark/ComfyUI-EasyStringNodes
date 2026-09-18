@@ -660,19 +660,34 @@ function showDialog(node, editIndex, initialTab) {
   });
 
   addBtn.addEventListener("click", () => {
+    // The new row goes to the TOP of the list, not the bottom.
+    //
+    // Appending put it at the end of a list that can be thousands of rows long,
+    // and this list renders windowed: applyFilter() rebuilds only the first
+    // RENDER_CHUNK cards, so the new row's card did not exist, the focus() call
+    // was a no-op, and `list.scrollTop = list.scrollHeight` only reached the
+    // bottom of the rendered window - not the real end. Measured on a 2000-row
+    // list: the new row sat 10211px below the viewport and nothing was focused,
+    // so the user had to scroll the whole list to find the row they just made.
+    //
+    // The filters are cleared first: with a search or category filter active the
+    // new row could be filtered straight out, and the user would again see
+    // nothing. Adding at the top also matches how a new row is used - it is
+    // almost always the one being worked on right now - and the row's own
+    // # (orig) number is untouched, so presets and line_numbers still resolve
+    // through it exactly as before.
     const row = { num: null, cat: catSel.value || "", on: false, pos: "", neg: "", img: "" };
-    rows.push(row);
+    rows.unshift(row);
     rebuildCats();
     searchInp.value = "";
     catSel.value = "";
     setCategoryFilter(node, "");
     applyFilter();
-    list.scrollTop = list.scrollHeight;
+    list.scrollTop = 0;
+    // The row is first and unfiltered, so applyFilter() has just built its card.
     const card = cardEls.get(row);
-    if (card) {
-      const ta = card.querySelector("textarea");
-      if (ta) ta.focus();
-    }
+    const ta = card && card.querySelector("textarea");
+    if (ta && typeof ta.focus === "function") ta.focus();
   });
 
   // ---------------- import modal (old data) ----------------

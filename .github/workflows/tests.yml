@@ -57,6 +57,15 @@ jobs:
       - name: Widget button click
         run: node tests/tg_widget_click.mjs
 
+      # "+ Add row" used to append to a list that renders in windows of 60
+      # cards, so the row it created had no card, could not be focused, and sat
+      # thousands of pixels below the viewport - the user had to scroll the
+      # whole list to reach it. This drives the real dialog and clicks the real
+      # button, and also asserts the existing rows keep the # their presets
+      # address them by.
+      - name: Add row placement
+        run: node tests/esn_add_row.mjs
+
       - name: Node logic
         run: python3 tests/test_nodes.py
 
