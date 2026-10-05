@@ -13,6 +13,7 @@ import {
   bumpDataRev, dataWidget, categoryCounts, findWidget,
   dsPutImage, imageUrlFor, presetRowEntries, presetRowTargets,
   presetTickStats, DATA_URL_PREFIX, app,
+  cleanWeight, formatWeightLabel, WEIGHT_MIN, WEIGHT_MAX, WEIGHT_STEP,
 } from "./esn_core.js";
 import {
   sortRowsByFreq, sortRowsByNum, resizeNode, loadDatasetInto,
@@ -280,6 +281,78 @@ function buildRowCard(row, idx, api) {
   fields.appendChild(pos.col);
   fields.appendChild(neg.col);
 
+  // ---- per-row weight slider -------------------------------------------
+  // One weight for the whole row; Python tags EVERY comma-separated token of
+  // the row with it (a row without commas is a single token) and multiplies
+  // it by the node's global "weight" input. 1 is the neutral value, so a row
+  // left alone keeps producing exactly what it produced before.
+  const weightRow = document.createElement("div");
+  Object.assign(weightRow.style, {
+    display: "flex", alignItems: "center", gap: "8px", marginTop: "6px", flexWrap: "nowrap",
+  });
+  const wLab = document.createElement("label");
+  wLab.textContent = "Weight";
+  Object.assign(wLab.style, {
+    fontSize: "11px", color: "#aaa", textTransform: "uppercase",
+    letterSpacing: "0.4px", flex: "0 0 auto",
+  });
+  const wSlider = document.createElement("input");
+  wSlider.type = "range";
+  wSlider.min = String(WEIGHT_MIN);
+  wSlider.max = String(WEIGHT_MAX);
+  wSlider.step = String(WEIGHT_STEP);
+  wSlider.value = String(cleanWeight(row.weight));
+  wSlider.style.cssText = "flex:1 1 auto;min-width:80px;accent-color:#3a7bd5;cursor:pointer";
+  const wNum = document.createElement("input");
+  wNum.type = "number";
+  wNum.min = String(WEIGHT_MIN);
+  wNum.max = String(WEIGHT_MAX);
+  wNum.step = String(WEIGHT_STEP);
+  wNum.value = formatWeightLabel(row.weight);
+  Object.assign(wNum.style, {
+    flex: "0 0 62px", background: "#171717", color: "#eee", border: "1px solid #3d3d3d",
+    borderRadius: "4px", padding: "2px 4px", fontFamily: "monospace", fontSize: "11px",
+  });
+  const wReset = mkBtn("1", { pad: "3px 8px", font: "11px" });
+  wReset.title = "Reset this row's weight to 1";
+  Object.assign(wReset.style, { flex: "0 0 auto", minHeight: "24px" });
+
+  // Single source of truth: row.weight. Both controls plus the reset button
+  // write it, then mirror the normalised value into the other control, so the
+  // slider and the number box can never disagree.
+  const setWeight = (value, from) => {
+    const w = cleanWeight(value);
+    row.weight = w;
+    if (from !== "slider") wSlider.value = String(w);
+    if (from !== "number") wNum.value = formatWeightLabel(w);
+    const flat = Math.abs(w - 1) < 1e-9;
+    wLab.style.color = flat ? "#aaa" : "#8cf";
+    wLab.title = flat
+      ? "Weight 1: this row is emitted unchanged"
+      : "This row's tokens are emitted with weight " + formatWeightLabel(w) +
+        " (x the node's global weight)";
+  };
+  wSlider.addEventListener("input", () => setWeight(wSlider.value, "slider"));
+  wNum.addEventListener("input", () => {
+    // typing is free-form: only commit numbers the browser considers valid,
+    // otherwise a half-typed "0." would collapse the row to 0.1 mid-keystroke
+    if (wNum.value === "" || (wNum.validity && wNum.validity.badInput)) return;
+    setWeight(wNum.value, "number");
+  });
+  wNum.addEventListener("change", () => setWeight(wNum.value, ""));
+  wNum.addEventListener("blur", () => setWeight(wNum.value, ""));
+  wReset.addEventListener("click", () => setWeight(1, ""));
+  setWeight(row.weight, "");
+
+  weightRow.appendChild(wLab);
+  weightRow.appendChild(wSlider);
+  weightRow.appendChild(wNum);
+  weightRow.appendChild(wReset);
+
+  const fieldsWrap = document.createElement("div");
+  fieldsWrap.appendChild(fields);
+  fieldsWrap.appendChild(weightRow);
+
   // image column
   const imgCol = document.createElement("div");
   Object.assign(imgCol.style, { flex: "0 0 92px", display: "flex", flexDirection: "column", gap: "4px", alignItems: "center" });
@@ -367,7 +440,8 @@ function buildRowCard(row, idx, api) {
   fields.appendChild(imgCol);
 
   card.appendChild(topRow);
-  card.appendChild(fields);
+  // fields (positive / negative / image) plus the weight slider form one block
+  card.appendChild(fieldsWrap);
 
   up.addEventListener("click", () => api.moveUp(card));
   down.addEventListener("click", () => api.moveDown(card));
@@ -749,7 +823,7 @@ function showDialog(node, editIndex, initialTab) {
     // stopped at the bottom of the rendered window instead of the end of the
     // list. revealCard() builds the cards up to the new row first, so it is
     // shown and focused without the user scrolling for it.
-    const row = { num: null, cat: catSel.value || "", on: false, pos: "", neg: "", img: "" };
+    const row = { num: null, cat: catSel.value || "", on: false, pos: "", neg: "", img: "", weight: 1 };
     rows.push(row);
     rebuildCats();
     // Clear the filters: with a search or category filter active the new row
@@ -987,7 +1061,10 @@ function showDialog(node, editIndex, initialTab) {
       Object.assign(cb.style, { width: "16px", height: "16px", margin: "0", accentColor: "#3a7bd5" });
       const lab = document.createElement("span");
       lab.textContent = "#" + e.num + "  " + (e.row
-        ? ((e.row.pos || e.row.neg || "(empty)").slice(0, 70))
+        ? ((e.row.pos || e.row.neg || "(empty)").slice(0, 70) +
+           (Math.abs(cleanWeight(e.row.weight) - 1) < 1e-9
+             ? ""
+             : "  \u00d7" + formatWeightLabel(e.row.weight)))
         : "(no such row)");
       Object.assign(lab.style, { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
       cb.addEventListener("change", () => {
@@ -1083,11 +1160,16 @@ function showDialog(node, editIndex, initialTab) {
     const out = [];
     rows.forEach((row, i) => {
       const card = cardEls.get(row);
-      let pos = "", neg = "";
+      let pos = "", neg = "", weight = cleanWeight(row.weight);
       if (card) {
         const tas = card.querySelectorAll("textarea");
         pos = tas[0] ? tas[0].value : "";
         neg = tas[1] ? tas[1].value : "";
+        // the range input is this row's weight control; row.weight is kept in
+        // step by its input handler, so reading the control covers the case of
+        // a browser that reports the drag only through the element's value
+        const rng = card.querySelector('input[type="range"]');
+        if (rng) weight = cleanWeight(rng.value);
       } else {
         pos = row.pos;
         neg = row.neg;
@@ -1100,6 +1182,7 @@ function showDialog(node, editIndex, initialTab) {
         neg: neg,
         img: typeof row.img === "string" ? row.img : "",
         freq: (typeof row.freq === "number" && row.freq > 0) ? Math.floor(row.freq) : 0,
+        weight: weight,
       });
     });
     return out;

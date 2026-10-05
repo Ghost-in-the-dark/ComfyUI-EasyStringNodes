@@ -19,7 +19,7 @@ All nodes are pure Python (standard library only) — no extra packages are requ
 | `EasyStringSelector` | Easy String Selector | Text Processing | V2 + preset-driven line selection + trigger gate |
 | `EasyStringSelectorNeg` | Easy String Selector Neg | Text Processing | Split selected lines into positive and negative prompts |
 | `ConcatenatePromptsNode` | Concatenate Prompts | Text Processing | Join the connected prompt inputs into one string |
-| `EasyStringNegEditor` | Easy String Neg Editor | Text Processing | SelectorNeg-style positive/negative builder: visual row editor, old-data import, presets, categories, checkbox manual pick, image hover preview |
+| `EasyStringNegEditor` | Easy String Neg Editor | Text Processing | SelectorNeg-style positive/negative builder: visual row editor, per-row weight sliders, old-data import, presets, categories, checkbox manual pick, image hover preview |
 | `EasyStringTokenGraph` | Easy String Token Graph | Text Processing | Count which tokens you use most and how they relate: floating co-occurrence graph, quality-token exclusions |
 
 ## Installation
@@ -158,14 +158,14 @@ The **category** is a free-text label shown as a small chip on each row. Clickin
 
 | Input | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `rows` | STRING (JSON) | 2 demo rows | `[{num?, cat?, on?, pos, neg, img, freq?}, …]`; edit it through the **Add / Edit rows** button, not by hand |
+| `rows` | STRING (JSON) | 2 demo rows | `[{num?, cat?, on?, pos, neg, img, freq?, weight?}, …]`; edit it through the **Add / Edit rows** button, not by hand |
 | `presets` | STRING (text) | empty | one preset per line: `N: row numbers` (`1: 108 193 135`); edit/import it in the **Presets** tab |
 | `line_numbers` | STRING | `` (empty) | rows to use when `select_all`/`use_preset`/`select_checked` are off (`1,3` or `2-4`); leave empty to use the checkbox-ticked rows; empty result outputs empty strings |
 | `select_all` | BOOLEAN | `true` | `true` = use every row, `false` = use `line_numbers` (or the checkbox-ticked rows when `line_numbers` is empty); an empty selection outputs empty strings |
 | `select_checked` | BOOLEAN | `false` | `true` = use only rows ticked with the checkbox in the editor (manual pick; overrides `line_numbers` and presets); none ticked outputs empty strings |
 | `use_preset` | BOOLEAN | `false` | `true` = use the preset chosen in `preset_line` instead of rows selection |
 | `preset_line` | INT | `1` | which preset (by its number) to apply when `use_preset` is on |
-| `weight` | FLOAT (slider) | `1.0` | element weight |
+| `weight` | FLOAT (slider) | `1.0` | global element weight (multiplied by each row's own weight) |
 | `apply_weight` | BOOLEAN | `true` | rewrite each element as `(text:weight)` |
 | `add_break` | BOOLEAN | `false` | append ` BREAK` to the positive output |
 | `preset_trigger` | BOOLEAN (optional input) | `true` | optional run gate - **leave unconnected to always run**, or connect `false` to block the node with an error |
@@ -175,6 +175,22 @@ The **category** is a free-text label shown as a small chip on each row. Clickin
 **Outputs:** `positive_prompt` (STRING), `negative_prompt` (STRING)
 
 Rows behave exactly like `positive --- negative` lines in *EasyStringSelectorNeg*: row text is split into comma-separated elements (respecting `()`/`[]`/`{}`), each element is optionally re-weighted, positives are joined to the positive output and negatives to the negative output. A preset number selects the rows whose numbers are listed in it — each number matches a row's **original #** first, then falls back to the 1-based position in the list.
+
+**Per-row weight**
+
+Every row has its own **weight**, so one list can mix `(cat:1.2)` and `(dog:0.7)` without splitting it into several nodes. The row slider is available in two places and both write the same value:
+
+- **On the node** — a compact logarithmic slider sits in each row, just left of the usage counter. Its value is drawn next to it; clicking that number resets the row to `1`. Dragging it never opens the row dialog.
+- **In the dialog** — each row card has a full-width slider, a number box you can type into and a **1** button to reset.
+
+Semantics:
+
+- The slider applies to **every comma-separated token of that row**: a row `cat, bird` weighted `2` becomes `(cat:2), (bird:2)`. A row without commas is a single token.
+- The final weight is `global weight × row weight`, clamped to `0.1 … 10`. So the node's `weight` stays the master control and a row weight of `1` changes nothing — old workflows and datasets without a `weight` field keep producing byte-identical prompts.
+- A row weight is ignored when `apply_weight = false` (nothing is tagged in that mode).
+- The scale is **logarithmic** with `1.0` exactly in the middle, so lowering (0.5) and raising (2.0) are equally easy to hit; a linear 0.1–10 track would bunch the useful range into the far left.
+
+*Example (apply_weight = true, global weight 1.5):* row 1 `cat, bird` weight `2` → `(cat:3), (bird:3)`; row 2 `dog` weight `1` → `(dog:1.5)`.
 
 **Importing old data**
 
@@ -187,6 +203,7 @@ The **Presets** tab edits the `presets` field directly (`presetNumber: row numbe
 **Using the editor**
 
 - Click the **✎ Rows / Presets — edit** button on the node to open the dialog.
+- **Row weight**: each row has its own weight slider (see *Per-row weight* above) — dragged on the node canvas or, with a number box and a **1** reset button, on every row card in the dialog. The value is what tags that row's tokens as `(token:weight)` on top of the node's global `weight`, so one dataset can mix strengths without extra nodes.
 - **Rows** tab: search box, **category filter** (each entry shows its row count; typing a new category into a card's `Cat:` field makes it selectable without reopening the dialog), **+ Add row**, **↧ Import old data** and the bulk **Tick all / Untick all** buttons — these act on the rows the dialog currently shows, and their label carries that count (`Tick all 12`). Click any card to edit its tick, category, fields, original number (#), image, order or delete. With many rows the dialog renders only the visible part of the list and fills more as you scroll, so it opens instantly even for huge datasets. Because of that windowing, **+ Add row** appends the new row at the **end** and then scrolls it into view and puts the caret in its first field, so it is on screen with no scrolling — it clears the search / category filters first so the new (empty) row cannot be filtered straight out. The row goes at the end, never at the top: a row without an explicit **#** is addressed by its 1-based position, so inserting above the others would renumber every existing row and silently change which rows presets and `line_numbers` select.
 - Ticking a row on the node canvas itself (the checkbox at the row start) also toggles its state. Long row sets scroll right on the node with the mouse wheel, the drawn **▲ / ▼** arrows under the list, or the **drag scrollbar** on the right edge of the rows area (when the preset list overflows, the wheel scrolls it too).
 - **On-node search**: the small search field under the header filters rows by number, category or text (`pos`/`neg`) live — the header then shows *Rows (matched/total)*, unmatched rows are hidden, and the ✕ in the field clears the filter. It searches the same way as the dialog search box. Search, *only* and the category filter are three independent filters that combine with AND, and the bulk tick buttons always act on the result of that combination.

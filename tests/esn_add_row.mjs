@@ -353,6 +353,69 @@ check("the original first row is still row 1", saved[0].num === 1000 && saved[0]
   JSON.stringify({ num: saved[0].num, pos: saved[0].pos }));
 
 // --------------------------------------------------------------------------
+// per-row weight control in a card: the slider must drive row.weight and the
+// value must survive Save -> the rows widget (it is what Python multiplies
+// into every token of that row).
+console.log("\nthe card's weight slider drives the saved row weight\n");
+
+const node2 = mkNode();
+openEditor(node2, 0, "rows"); // edit row #1 directly
+
+const card = all(document.body, (el) => el.__esnRow)[0];
+check("the edited row has a card", !!card);
+const range = card ? all(card, (el) => el.tagName === "INPUT" && el.type === "range")[0] : null;
+const numBox = card ? all(card, (el) => el.tagName === "INPUT" && el.type === "number")[0] : null;
+check("the card has a range slider", !!range);
+check("the card has a number box", !!numBox);
+check("the slider spans the weight range", !!range && range.min === "0.1" && range.max === "10",
+  range && `${range.min}..${range.max}`);
+check("the slider starts at the neutral 1", !!range && Number(range.value) === 1,
+  range && range.value);
+
+if (range && numBox) {
+  // dragging the slider: the browser fires "input" on every move
+  range.value = "2.5";
+  range.dispatch("input");
+  check("dragging the slider writes row.weight", card.__esnRow.weight === 2.5,
+    card.__esnRow.weight);
+  check("the number box mirrors the slider", numBox.value === "2.5", numBox.value);
+
+  // typing in the number box is the other direction
+  numBox.value = "3";
+  numBox.dispatch("input");
+  check("typing a number writes row.weight", card.__esnRow.weight === 3,
+    card.__esnRow.weight);
+  check("the slider mirrors the number box", Number(range.value) === 3, range.value);
+
+  // an out-of-range value is clamped, never stored raw
+  numBox.value = "99";
+  numBox.dispatch("change");
+  check("an out-of-range weight is clamped to the maximum", card.__esnRow.weight === 10,
+    card.__esnRow.weight);
+
+  // reset button returns the row to neutral
+  const resetBtn = findButton("1");
+  check("the reset-to-1 button exists", !!resetBtn);
+  if (resetBtn) {
+    resetBtn.click();
+    check("the reset button returns the row to 1", card.__esnRow.weight === 1,
+      card.__esnRow.weight);
+  }
+
+  // set a real weight and save: it must reach the rows widget
+  range.value = "1.4";
+  range.dispatch("input");
+  const saveBtn2 = findButton("Save");
+  if (saveBtn2) saveBtn2.click();
+  const saved2 = JSON.parse(widgetValue(node2, "rows"));
+  check("the row weight is saved into the rows widget", Number(saved2[0].weight) === 1.4,
+    saved2[0].weight);
+  check("only the edited row carries a weight change",
+    saved2.slice(1).every((r) => Number(r.weight) === 1),
+    saved2.slice(1, 3).map((r) => r.weight));
+}
+
+// --------------------------------------------------------------------------
 fs.rmSync(tmpRoot, { recursive: true, force: true });
 if (failures.length) {
   console.log(`\n${failures.length} failure(s):`);

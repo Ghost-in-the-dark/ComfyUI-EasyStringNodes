@@ -263,6 +263,92 @@ def test_neg_editor_weight_applied():
     assert neg == "(dog:1.2), (blurry:1.2), (watermark:1.2)"
 
 
+# --- per-row weight (multiplies the global weight) ------------------------
+
+def _wrows(*specs):
+    """Rows from (pos, neg, weight) triples; weight None = field absent."""
+    out = []
+    for pos, neg, weight in specs:
+        row = {"pos": pos, "neg": neg}
+        if weight is not None:
+            row["weight"] = weight
+        out.append(row)
+    return json.dumps(out)
+
+
+def test_neg_editor_row_weight_multiplies_global():
+    node = EasyStringNegEditor()
+    pos, neg = node.process(_wrows(("cat", "dog", 2.0)), weight=1.5,
+                            apply_weight=True)
+    assert pos == "(cat:3)"
+    assert neg == "(dog:3)"
+
+
+def test_neg_editor_row_weight_applies_to_every_token():
+    # ONE weight per row, applied to each comma-separated token of that row
+    node = EasyStringNegEditor()
+    pos, neg = node.process(_wrows(("cat, bird", "dog, blurry", 2.0)),
+                            apply_weight=True)
+    assert pos == "(cat:2), (bird:2)"
+    assert neg == "(dog:2), (blurry:2)"
+
+
+def test_neg_editor_row_weight_one_is_neutral():
+    # a row with no weight field (all legacy data) must be byte-identical
+    node = EasyStringNegEditor()
+    pos, neg = node.process(_wrows(("cat", "dog", None)), weight=1.2,
+                            apply_weight=True)
+    assert (pos, neg) == ("(cat:1.2)", "(dog:1.2)")
+    # an explicit 1 must behave the same as the field being absent
+    pos, neg = node.process(_wrows(("cat", "dog", 1)), weight=1.2,
+                            apply_weight=True)
+    assert (pos, neg) == ("(cat:1.2)", "(dog:1.2)")
+
+
+def test_neg_editor_row_weight_ignored_without_apply_weight():
+    node = EasyStringNegEditor()
+    pos, neg = node.process(_wrows(("cat", "dog", 3.0)), weight=2.0,
+                            apply_weight=False)
+    assert (pos, neg) == ("cat", "dog")
+
+
+def test_neg_editor_row_weight_clamped_and_invalid():
+    node = EasyStringNegEditor()
+    assert node.process(_wrows(("cat", "", 99)), apply_weight=True)[0] == "(cat:10)"
+    assert node.process(_wrows(("cat", "", 0.001)), apply_weight=True)[0] == "(cat:0.1)"
+    # unparsable / NaN / bool weights fall back to "no change"
+    for bad in ("abc", None, float("nan"), True):
+        assert node.process(_wrows(("cat", "", bad)), apply_weight=True)[0] == "(cat:1)"
+    # numeric strings are accepted (the front-end may store them as text)
+    assert node.process(_wrows(("cat", "", "1.2")), apply_weight=True)[0] == "(cat:1.2)"
+
+
+def test_neg_editor_row_weight_only_affects_its_own_row():
+    node = EasyStringNegEditor()
+    pos, _ = node.process(_wrows(("cat", "", 2.0), ("bird", "", 1.0)),
+                          apply_weight=True)
+    assert pos == "(cat:2), (bird:1)"
+
+
+def test_neg_editor_as_weight_normalises():
+    # _as_weight is the single normaliser for the widget JSON
+    assert EasyStringNegEditor._as_weight(None) == 1.0
+    assert EasyStringNegEditor._as_weight(2) == 2.0
+    assert EasyStringNegEditor._as_weight("2.5") == 2.5
+    assert EasyStringNegEditor._as_weight(float("inf")) == 1.0
+    assert EasyStringNegEditor._as_weight(True) == 1.0
+    assert EasyStringNegEditor._as_weight(0) == 0.1
+    assert EasyStringNegEditor._as_weight(50) == 10.0
+
+
+def test_neg_editor_row_weight_reaches_selected_rows_only():
+    # the row weight must follow the row, not the selection order
+    node = EasyStringNegEditor()
+    pos, _ = node.process(_wrows(("cat", "", 2.0), ("bird", "", 4.0)),
+                          line_numbers="2", select_all=False, apply_weight=True)
+    assert pos == "(bird:4)"
+
+
 def test_neg_editor_html_cleaned():
     node = EasyStringNegEditor()
     html_rows = '[{"pos": "<p>cat</p><br><p>dog</p>", "neg": "x", "img": ""}]'

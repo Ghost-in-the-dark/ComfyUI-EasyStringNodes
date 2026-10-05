@@ -12,6 +12,12 @@ Each "row" is {num?, cat?, on?, pos, neg, img}:
             rows without this field (legacy data) count as ticked.
   * pos   - positive prompt text
   * neg   - negative prompt text
+  * weight- per-row weight (float, 0.1 .. 10, default 1). It multiplies the
+            node's global "weight" input and is applied to EVERY element of
+            the row (both its pos and its neg text), where an element is one
+            comma-separated token; a row without commas is a single element.
+            Left at 1 it changes nothing, so old row data keeps its meaning.
+            Ignored when "apply_weight" is off (nothing is tagged then).
   * img   - optional image reference. In dataset-file mode it is the file
             name inside the dataset's "<name>.img" folder (the front-end
             uploads the picture once and stores only this reference, so
@@ -240,8 +246,8 @@ class EasyStringNegEditor:
     CATEGORY = "Text Processing"
     DESCRIPTION = ("Positive/negative builder with a visual row editor, "
                    "old-data import, categories, presets, checkbox pick "
-                   "(rows and, optionally, inside a preset) and image hover "
-                   "previews.")
+                   "(rows and, optionally, inside a preset), per-row weight "
+                   "sliders and image hover previews.")
     # parsing
     # ------------------------------------------------------------------
     @staticmethod
@@ -273,8 +279,27 @@ class EasyStringNegEditor:
             return n if n > 0 else 0
         return 0
 
+    @staticmethod
+    def _as_weight(value):
+        """Per-row weight as a float clamped to the node's 0.1 .. 10 range.
+
+        Anything missing or unparsable becomes 1.0 ("no change"), so legacy
+        rows - which have no "weight" field at all - keep their old output.
+        Strings are accepted so a row saved by the front-end as
+        {"weight": "1.2"} behaves the same as the numeric form.
+        """
+        if value is None or isinstance(value, bool):
+            return 1.0
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return 1.0
+        if number != number or number in (float("inf"), float("-inf")):
+            return 1.0  # NaN / inf: not a weight
+        return max(0.1, min(10.0, number))
+
     def _parse_rows(self, rows_value):
-        """Turn the widget JSON into a clean [{num, pos, neg, img}, ...] list."""
+        """Turn the widget JSON into a clean row list (see module docstring)."""
         if isinstance(rows_value, str):
             try:
                 data = json.loads(rows_value)
@@ -318,6 +343,7 @@ class EasyStringNegEditor:
                 "neg": html_to_text(str(item.get("neg") or "")),
                 "img": img if isinstance(img, str) else "",
                 "freq": self._as_freq(item.get("freq")),
+                "weight": self._as_weight(item.get("weight")),
             })
         return rows
 
@@ -459,9 +485,24 @@ class EasyStringNegEditor:
         else:
             chosen = self._select_rows(parsed, select_all, line_numbers)
 
-        formatted_weight = format_weight(weight) if apply_weight else None
+        # Weighting is the node's global "weight" MULTIPLIED by the row's own
+        # weight, so the global slider stays the master multiplier and a row
+        # slider is a local correction; a row left at 1 therefore produces
+        # exactly what it produced before this feature existed. The combined
+        # value is what every element of the row is tagged with - one element
+        # per comma-separated token, and a row without commas is one element.
+        # format_weight() clamps to the node's 0.1 .. 10 range.
+        formatted_global = format_weight(weight) if apply_weight else None
         positives, negatives = [], []
         for row in chosen:
+            formatted_weight = formatted_global
+            if apply_weight:
+                try:
+                    base = float(weight)
+                except (TypeError, ValueError):
+                    base = 1.0
+                formatted_weight = format_weight(
+                    base * row.get("weight", 1.0))
             if row["pos"]:
                 positives.extend(
                     process_elements(split_top_level(row["pos"]),

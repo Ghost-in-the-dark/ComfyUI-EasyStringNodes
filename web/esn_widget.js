@@ -11,9 +11,11 @@ import {
   commitRows, countPresets, presetEntries, presetChoice, categoryCounts,
   stepPresetChoice, UI_NAME, parseNumberSpec, presetTickStats,
   settingsCollapsed, applySettingsCollapsed, toggleSettingsCollapsed,
+  cleanWeight, formatWeightLabel, weightFromFrac, fracFromWeight,
   MAX_DRAWN_ROWS, WHEEL_STEP, ROW_H, HEADER_H, SEARCH_H, TOOL_H, STATUS_H, SCROLL_H,
   FREQ_W, SB_W, SB_HIT_W, MAX_DRAWN_PRESETS, PRESET_H, PRESET_HDR_H, PRESET_GAP,
   PRESET_SCROLL_H, PRESET_CTRL_H, PRESET_EMPTY_H, PRESET_BOX_W, COL,
+  WEIGHT_COL_W, WEIGHT_TRACK_W, WEIGHT_LABEL_W,
 } from "./esn_core.js";
 import {
   rowCount, rebuildView, toggleFreqSort, toggleOnlyChecked, tickVisibleRows,
@@ -167,6 +169,124 @@ function drawArrowButton(ctx, x, y, w, h, dir, enabled) {
   ctx.restore();
 }
 
+// --- per-row weight slider (drawn inside a row) --------------------------
+//
+// A row's weight is a multiplier applied by Python to every comma-separated
+// token of the row, combined with the node's global "weight" input. The
+// control is a logarithmic slider with 1.0 exactly at its centre, plus the
+// value as text (so the number is readable, not just the thumb position) and
+// a click on that text resets the row to 1.
+//
+// It is deliberately drawn in the row's right-hand gap BEFORE the usage
+// counter, and its pointer zone is checked before the row's click-to-edit
+// handler, so grabbing the slider never opens the row dialog.
+const WEIGHT_THUMB_R = 4.5;
+
+// Right-most x the weight column may use: the row's right padding, pulled in
+// by the usage counter chip and the image mark when those are drawn.
+function rowRightLimit(fullW, freq, hasImg) {
+  let right = fullW - 12;
+  if (freq > 0) {
+    // the chip is right-aligned and at least 16 px wide, so reserve that
+    right = Math.min(right, fullW - 14 - 16 - 5);
+  }
+  if (hasImg) right = Math.min(right, fullW - 24 - (freq > 0 ? FREQ_W - 2 : 2) - 8 - 4);
+  return right;
+}
+
+// Is there room for the slider without running into the row text / the
+// category chip that ends at labelX0? 16 px of clearance keeps the track
+// visually separate from the text it sits next to.
+function weightSliderFits(rowY, rowH, rightLimit, labelX0) {
+  const g = weightSliderGeometry(rowY, rowH, rightLimit);
+  return g.trackX >= labelX0 + 16;
+}
+
+function weightSliderGeometry(rowY, rowH, rightLimit) {
+  // label sits at the right edge; the track is to its left
+  const labelX = rightLimit - WEIGHT_LABEL_W;
+  const trackX = labelX - 6 - WEIGHT_TRACK_W;
+  const trackW = WEIGHT_TRACK_W;
+  const cy = rowY + rowH / 2;
+  return {
+    trackX: trackX,
+    trackY: cy - 3,
+    trackW: trackW,
+    trackH: 6,
+    // The pointer band covers the full row height. 22 px is the pitch of the
+    // existing rows, so a taller band would overlap the neighbouring row's
+    // slider and make the grab ambiguous; the horizontal extent (60 px) is
+    // what keeps the control comfortable to hit.
+    hitY: cy - rowH / 2,
+    hitH: rowH,
+    labelX: labelX,
+    labelW: WEIGHT_LABEL_W,
+    cy: cy,
+  };
+}
+
+function drawRowWeight(ctx, row, rowY, rowH, midY, rightLimit, labelX0) {
+  const g = weightSliderGeometry(rowY, rowH, rightLimit);
+  // On a narrow node a long category chip or row text can reach into the
+  // right-hand gap. Drawing the slider there anyway would both look wrong and
+  // steal the click that belongs to the category chip / click-to-edit, so the
+  // control is simply omitted when there is no clear space for it: the row
+  // then behaves exactly as it did before this feature.
+  if (!weightSliderFits(rowY, rowH, rightLimit, labelX0)) return null;
+  const w = cleanWeight(row.weight);
+  const flat = Math.abs(w - 1) < 1e-9;
+  const frac = fracFromWeight(w);
+  ctx.save();
+  // track
+  ctx.fillStyle = "rgba(255,255,255,0.14)";
+  ctx.beginPath();
+  ctx.roundRect(g.trackX, g.trackY, g.trackW, g.trackH, [3]);
+  ctx.fill();
+  // filled part from the centre (1.0) to the thumb: shows direction, so
+  // "heavier" vs "lighter" is readable without reading the number
+  const midX = g.trackX + g.trackW / 2;
+  const thumbX = g.trackX + frac * g.trackW;
+  if (Math.abs(thumbX - midX) > 0.5) {
+    ctx.fillStyle = flat ? "rgba(255,255,255,0.25)" : COL.accentWeight;
+    ctx.globalAlpha = 0.55;
+    ctx.fillRect(Math.min(midX, thumbX), g.trackY, Math.abs(thumbX - midX), g.trackH);
+    ctx.globalAlpha = 1;
+  }
+  // notch at the neutral centre
+  ctx.strokeStyle = "rgba(255,255,255,0.45)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(midX + 0.5, g.trackY - 2);
+  ctx.lineTo(midX + 0.5, g.trackY + g.trackH + 2);
+  ctx.stroke();
+  // thumb
+  ctx.fillStyle = flat ? COL.textDim : COL.accentWeight;
+  ctx.beginPath();
+  ctx.arc(thumbX, g.cy, WEIGHT_THUMB_R, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#0d1a24";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // value + reset affordance
+  ctx.fillStyle = flat ? COL.textMuted : COL.accentWeight;
+  ctx.font = (flat ? "" : "bold ") + "9px sans-serif";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.fillText(clampTextToWidth(ctx, formatWeightLabel(w), g.labelW), g.labelX + g.labelW, midY);
+  ctx.textAlign = "left";
+  ctx.restore();
+  return {
+    x: g.trackX - 2,
+    y: g.hitY,
+    w: (g.labelX + g.labelW) - (g.trackX - 2),
+    h: g.hitH,
+    trackX: g.trackX,
+    trackW: g.trackW,
+    labelX: g.labelX,
+    labelW: g.labelW,
+  };
+}
+
 // --- rows scrollbar drag ---
 let sbDragNode = null;
 
@@ -254,6 +374,104 @@ function onSbMove(e) {
 
 function onSbUp() {
   endSbDrag();
+}
+
+// --- per-row weight drag --------------------------------------------------
+//
+// Mirrors the scrollbar drag above: a window-level pointer grab in the CAPTURE
+// phase, so ComfyUI / LiteGraph stopping propagation on pointerup (or the
+// button being released outside the window) cannot leave the slider stuck to
+// the cursor. The weight is written through commitRows() on EVERY move, so the
+// value survives a reload and reaches the dataset file exactly like a click on
+// the row checkbox does; the whole row is a multiplier of that one number.
+let weightDragNode = null;
+
+function weightAtClientX(st, zone, clientX) {
+  const scale = st.weightScale || 1;
+  const nodeX = st.weightStartNodeX + ((clientX - st.weightStartClientX) / scale);
+  let frac = (nodeX - zone.trackX) / zone.trackW;
+  if (frac < 0) frac = 0;
+  if (frac > 1) frac = 1;
+  return weightFromFrac(frac);
+}
+
+function startWeightDrag(node, st, event, zone, rowIndex) {
+  // a new grab always replaces a stale one (lost pointerup safety net)
+  endWeightDrag();
+  endSbDrag();
+  weightDragNode = node;
+  // Store the INDEX, never the row object: commitRows() runs cleanRows() and
+  // replaces every row with a fresh object, so a captured reference would go
+  // stale after the first move and the rest of the drag would silently write
+  // to a detached row (the drawn value then stops following the pointer).
+  st.weightRowIndex = rowIndex;
+  st.draggingWeight = true;
+  st.weightStartClientX = (event && typeof event.clientX === "number") ? event.clientX : 0;
+  const cur = st.rows[rowIndex];
+  st.weightStartNodeX = zone.trackX + fracFromWeight(cur ? cur.weight : 1) * zone.trackW;
+  st.weightScale = (app.canvas && app.canvas.ds && app.canvas.ds.scale) ? app.canvas.ds.scale : 1;
+  st.weightZone = zone;
+  try { event.stopPropagation(); } catch (e) {}
+  try { event.preventDefault(); } catch (e) {}
+  try {
+    const cv = app.canvas && app.canvas.canvas;
+    if (cv && typeof cv.setPointerCapture === "function" && event && event.pointerId != null) {
+      cv.setPointerCapture(event.pointerId);
+    }
+  } catch (err) {}
+  window.addEventListener("pointermove", onWeightMove, { capture: true, passive: false });
+  window.addEventListener("pointerup", endWeightDrag, { capture: true });
+  window.addEventListener("pointercancel", endWeightDrag, { capture: true });
+  window.addEventListener("blur", endWeightDrag);
+}
+
+function endWeightDrag() {
+  const node = weightDragNode;
+  weightDragNode = null;
+  if (node) {
+    const st = state(node);
+    st.draggingWeight = false;
+    st.weightRowIndex = -1;
+    app.graph?.setDirtyCanvas?.(true, true);
+  }
+  window.removeEventListener("pointermove", onWeightMove, { capture: true });
+  window.removeEventListener("pointerup", endWeightDrag, { capture: true });
+  window.removeEventListener("pointercancel", endWeightDrag, { capture: true });
+  window.removeEventListener("blur", endWeightDrag);
+}
+
+// Apply one weight to a row and persist it. commitRows() is dataset-aware:
+// in file mode it bumps data_rev and schedules the disk write, in widget mode
+// it rewrites the rows widget - exactly what a checkbox click already does.
+// It also REPLACES every row object (cleanRows), so the row is always looked
+// up again by index and never held across a commit.
+function setRowWeight(node, rowIndex, value) {
+  if (rowIndex < 0) return;
+  const st = state(node);
+  const row = st.rows[rowIndex];
+  if (!row) return;
+  const w = cleanWeight(value);
+  if (Math.abs(cleanWeight(row.weight) - w) < 1e-9) return;
+  row.weight = w;
+  commitRows(node, st.rows);
+  app.graph?.setDirtyCanvas?.(true, true);
+}
+
+function onWeightMove(e) {
+  const node = weightDragNode;
+  if (!node) return;
+  if (typeof e.buttons === "number" && (e.buttons & 1) === 0) {
+    endWeightDrag();
+    return;
+  }
+  const st = state(node);
+  const zone = st.weightZone;
+  // re-resolve the row from the live state: commitRows() swapped the objects
+  const rowIndex = st.weightRowIndex;
+  if (!zone || rowIndex < 0 || !st.rows[rowIndex]) return;
+  try { e.preventDefault(); } catch (err) {}
+  try { e.stopPropagation(); } catch (err) {}
+  setRowWeight(node, rowIndex, weightAtClientX(st, zone, e.clientX));
 }
 
 function makeListWidget(node) {
@@ -642,9 +860,16 @@ function makeListWidget(node) {
           lx = 52 + cw + 5;
           ctx.font = "10px sans-serif";
         }
-        // label (shrink by the reserved freq column / img marker)
+        // label (shrink by the reserved weight / freq column / img marker)
         const hasImg = !!row.img;
-        const reserved = (freq > 0 ? FREQ_W - 2 : 6) + (hasImg ? 14 : 0);
+        // Does the weight control actually fit on this row? Its geometry is
+        // computed up front from the right-hand edge (minus the usage counter
+        // and image mark), and only then is the label given the leftover
+        // space. Reserving the column unconditionally would silently eat 60 px
+        // of row text on a narrow node where the slider is not even drawn.
+        const hasWeightSlot = weightSliderFits(rowY, rowH, rowRightLimit(fullW, freq, hasImg), lx);
+        const reserved = (hasWeightSlot ? WEIGHT_COL_W : 0) +
+          (freq > 0 ? FREQ_W - 2 : 6) + (hasImg ? 14 : 0);
         const avail = fullW - 24 - (lx - 12) - reserved - 12; // -12: right padding
         const label = clampTextToWidth(ctx, row.pos || row.neg || "(empty)", Math.max(16, avail));
         ctx.fillStyle = row.pos
@@ -654,12 +879,8 @@ function makeListWidget(node) {
             : COL.textEmpty;
         ctx.font = "10px sans-serif";
         ctx.fillText(label, lx, midY);
-        if (hasImg) {
-          // image marker drawn as a small framed square, not an emoji
-          ctx.strokeStyle = COL.textMuted;
-          ctx.strokeRect(fullW - 24 - (freq > 0 ? FREQ_W - 2 : 2) - 8, midY - 4, 8, 8);
-        }
         // usage counter: explicit "xN" chip on the right edge of the row
+        const rightLimit = rowRightLimit(fullW, freq, hasImg);
         if (freq > 0) {
           const ft = "\u00d7" + freq;
           ctx.font = "bold 9px sans-serif";
@@ -674,6 +895,19 @@ function makeListWidget(node) {
           ctx.fillText(ft, fx + fw / 2, midY);
           ctx.textAlign = "left";
         }
+        if (hasImg) {
+          // image marker drawn as a small framed square, not an emoji
+          ctx.strokeStyle = COL.textMuted;
+          ctx.strokeRect(fullW - 24 - (freq > 0 ? FREQ_W - 2 : 2) - 8, midY - 4, 8, 8);
+        }
+        // per-row weight: a log-scale slider (1.0 dead centre) with its value
+        // beside it. Drawn LEFT of the usage counter / image mark so the
+        // pointer zone never overlaps those. The whole column is recorded on
+        // the row's hit rect, and mouse() checks it BEFORE the click-to-edit
+        // handler - dragging a slider must never open the row dialog.
+        const wRect = drawRowWeight(ctx, row, rowY, rowH, midY, rightLimit, lx);
+        const last = st.rects[st.rects.length - 1];
+        if (last) last.weight = wRect;
         ry += ROW_H;
       }
       // scroll area: arrows + wheel + drag scrollbar, drawn when rows hidden
@@ -1234,6 +1468,21 @@ function makeListWidget(node) {
         if (y >= r.top - 1 && y <= r.bottom + 1) {
           const row = st.rows[r.index];
           if (!row) return false;
+          // per-row weight slider FIRST: it must win over the click-to-edit
+          // handler below, otherwise grabbing the slider would open the row
+          // dialog instead of changing the weight. A press on the value text
+          // resets the row to 1 (a "Return to 1" shortcut); a press on the
+          // track starts a drag.
+          const wz = r.weight;
+          if (wz && x >= wz.x - 2 && x <= wz.x + wz.w + 2 &&
+              y >= wz.y && y <= wz.y + wz.h) {
+            if (x >= wz.labelX - 2) {
+              setRowWeight(node, r.index, 1);
+              return true;
+            }
+            startWeightDrag(node, st, event, wz, r.index);
+            return true;
+          }
           // checkbox column toggles the manual-pick flag in place (24x22
           // target, 24x24 with the row's own hit tolerance)
           if (x >= 10 && x <= 34) {

@@ -59,6 +59,14 @@ const TOOL_H = 28; // px of the toolbar row (24 px buttons + 4 px padding)
 const STATUS_H = 22; // px of the filter/status bar under the toolbar
 const SCROLL_H = 24; // px of the rows-scroll band under the rows list (28x24 arrow buttons)
 const FREQ_W = 26; // px reserved on the right of a row for the usage counter
+// per-row weight control drawn inside the row: a log-scale slider plus its
+// number, right-aligned before the usage counter / image mark. The label
+// doubles as a click target that resets the row to 1. The column is only
+// reserved (and only drawn) when the row has clear space for it - on a narrow
+// node it is omitted rather than drawn over the category chip.
+const WEIGHT_COL_W = 60; // total px reserved for the weight control
+const WEIGHT_TRACK_W = 32; // px of the draggable track (log scale, 1.0 centred)
+const WEIGHT_LABEL_W = 24; // px of the clickable number / reset target
 const SB_W = 9; // scrollbar track width for the rows list (visual only)
 const SB_HIT_W = 24; // px of the scrollbar's pointer-capture band
 // presets section drawn below the row list on the node canvas
@@ -89,6 +97,7 @@ const COL = {
   accentSort: "#ffd873", // active toolbar button label
   accentTick: "#6cf", // ticked checkbox
   accentPreset: "#fca", // presets section header
+  accentWeight: "#8cf", // per-row weight slider (when it is not 1)
   warn: "#ffcc66", // hot usage counter
 };
 const IMG_MAX_EDGE = 384;
@@ -160,6 +169,51 @@ function parseRows(raw) {
   }
 }
 
+// --- per-row weight -------------------------------------------------------
+// Bounds must match the Python node's "weight" input and format_weight():
+// a combined weight outside 0.1 .. 10 is clamped, and 1 is the neutral value
+// that keeps a row byte-identical to its pre-feature output.
+const WEIGHT_MIN = 0.1;
+const WEIGHT_MAX = 10.0;
+const WEIGHT_STEP = 0.1;
+
+// Normalise one row weight to a number in [WEIGHT_MIN, WEIGHT_MAX].
+// Missing / unparsable / NaN / infinite values become 1 ("no change"), so
+// legacy rows without the field behave exactly as before.
+function cleanWeight(value) {
+  if (value == null || value === "" || typeof value === "boolean") return 1;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 1;
+  if (n < WEIGHT_MIN) return WEIGHT_MIN;
+  if (n > WEIGHT_MAX) return WEIGHT_MAX;
+  return Math.round(n * 100) / 100; // kill 1.2000000000000002 style drift
+}
+
+// Short label for a weight ("1", "1.2", "2.5", "10") - the same shape the
+// Python format_weight() writes into the prompt, so the canvas always shows
+// the exact number that ends up in the tag. Only trailing zeros of the
+// DECIMAL part are dropped, so 10 stays "10" and not "1".
+function formatWeightLabel(value) {
+  return cleanWeight(value).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+// A weight is a MULTIPLIER, so a slider has to be logarithmic: on a linear
+// 0.1..10 track the neutral value 1 would sit at 9% of the width and almost
+// the whole track would be spent between 5 and 10, making the useful 0.5..2
+// range nearly impossible to hit. Mapping t in [0,1] to
+// WEIGHT_MIN * (WEIGHT_MAX/WEIGHT_MIN)^t puts exactly 1.0 at the CENTRE
+// (sqrt(0.1 * 10) === 1) and gives the same relative precision at every
+// weight. Both directions round-trip through cleanWeight().
+const WEIGHT_RATIO = WEIGHT_MAX / WEIGHT_MIN;
+function weightFromFrac(frac) {
+  const t = Math.max(0, Math.min(1, Number(frac) || 0));
+  return cleanWeight(WEIGHT_MIN * Math.pow(WEIGHT_RATIO, t));
+}
+function fracFromWeight(value) {
+  const w = cleanWeight(value);
+  return Math.log(w / WEIGHT_MIN) / Math.log(WEIGHT_RATIO);
+}
+
 function cleanRows(rows) {
   const out = [];
   for (const item of rows || []) {
@@ -190,6 +244,7 @@ function cleanRows(rows) {
       neg: typeof row.neg === "string" ? row.neg : "",
       img: typeof row.img === "string" ? row.img : "",
       freq: freq,
+      weight: cleanWeight(row.weight),
     });
   }
   return out;
@@ -219,6 +274,10 @@ function state(node) {
       view: [], // [{row, oi}] rows matching st.search + onlyChecked + catFilter (oi = index in st.rows)
       draggingSb: false, // dragging the rows scrollbar thumb
       sbStartY: 0, sbStartNodeY: 0, sbStartClientY: 0, sbScale: 1, sbGrabOffset: 0, sbZone: null,
+      // per-row weight slider drag (index, never the row object: commitRows
+      // swaps the objects, so a captured reference goes stale)
+      draggingWeight: false, weightRowIndex: -1, weightStartClientX: 0,
+      weightStartNodeX: 0, weightScale: 1, weightZone: null,
       hoverKey: -1, // row index under the mouse (for stateless draw-time hover)
       sortBtn: null, // header sort control hit zone (unused; kept for compat)
       sortedByFreq: false, // view-only flag: draw rows by usage frequency
@@ -948,13 +1007,17 @@ export {
   // layout constants
   MAX_DRAWN_ROWS, WHEEL_STEP, PRESET_WHEEL_STEP, RENDER_CHUNK,
   ROW_H, HEADER_H, SEARCH_H, FREQ_W, SB_W, SB_HIT_W,
+  WEIGHT_COL_W, WEIGHT_TRACK_W, WEIGHT_LABEL_W,
   MAX_DRAWN_PRESETS, PRESET_H, PRESET_BOX_W, PRESET_HDR_H, PRESET_GAP,
   TOOL_H, STATUS_H, SCROLL_H, PRESET_SCROLL_H, PRESET_CTRL_H, PRESET_EMPTY_H,
   COL,
+  WEIGHT_MIN, WEIGHT_MAX, WEIGHT_STEP,
   IMG_MAX_EDGE, IMG_QUALITY, NL, CR, DATA_URL_PREFIX, IMG_ROUTE,
   // helpers
   isDigits, parseNumberSpec,
-  parseRows, cleanRows, dumpRows, clampText, clampTextToWidth, state,
+  parseRows, cleanRows, cleanWeight, formatWeightLabel, dumpRows,
+  weightFromFrac, fracFromWeight,
+  clampText, clampTextToWidth, state,
   findWidget, rowsWidget, presetsWidget, dataWidget, widgetRawValue,
   hideTextWidget, unhideTextWidget, hideRowsWidget, syncFromWidget,
   persistFileNow, scheduleFilePersist, bumpDataRev,
