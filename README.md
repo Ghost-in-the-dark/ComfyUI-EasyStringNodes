@@ -180,8 +180,8 @@ Rows behave exactly like `positive --- negative` lines in *EasyStringSelectorNeg
 
 Every row has its own **weight**, so one list can mix `(cat:1.2)` and `(dog:0.7)` without splitting it into several nodes. The row slider is available in two places and both write the same value:
 
-- **On the node** — a compact logarithmic slider sits in each row, just left of the usage counter. Its value is drawn next to it; clicking that number resets the row to `1`. Dragging it never opens the row dialog.
-- **In the dialog** — each row card has a full-width slider, a number box you can type into and a **1** button to reset.
+- **On the node** — a logarithmic slider sits in each row, just left of the usage counter. Its value is drawn next to it; clicking that number resets the row to `1`, and **double-clicking anywhere on the slider** does the same (dragging a log track back to exactly `1` is fiddly, so there is a deliberate gesture for it). Dragging it never opens the row dialog.
+- **In the dialog** — each row card has a full-width slider, a number box you can type into and a **1** button to reset. Double-clicking the slider or the number box also resets, exactly like on the node.
 
 Semantics:
 

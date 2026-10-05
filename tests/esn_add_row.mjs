@@ -402,6 +402,20 @@ if (range && numBox) {
       card.__esnRow.weight);
   }
 
+  // double-click on the slider is the same reset, for the same reason as on
+  // the node: hitting exactly 1.0 by dragging a log track is fiddly
+  range.value = "3.5";
+  range.dispatch("input");
+  check("the slider can be set to 3.5", card.__esnRow.weight === 3.5, card.__esnRow.weight);
+  range.dispatch("dblclick");
+  check("double-clicking the slider resets the row to 1", card.__esnRow.weight === 1,
+    card.__esnRow.weight);
+  numBox.value = "2";
+  numBox.dispatch("input");
+  numBox.dispatch("dblclick");
+  check("double-clicking the number box resets the row to 1", card.__esnRow.weight === 1,
+    card.__esnRow.weight);
+
   // set a real weight and save: it must reach the rows widget
   range.value = "1.4";
   range.dispatch("input");

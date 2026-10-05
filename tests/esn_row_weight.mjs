@@ -342,6 +342,116 @@ check("a click on the row label falls through to click-to-edit",
   reachedOpenEditor || threw !== null, { reachedOpenEditor, threw });
 
 // ---------------------------------------------------------------------------
+console.log("\ndouble-click on the control resets the row to 1");
+
+// Press exactly ON THE TRACK (not the value label), twice, quickly. A single
+// press there starts a drag instead of resetting, so this is the gesture that
+// has to be added: without it, getting a log slider back to exactly 1.0 means
+// hunting for the centre of the track.
+{
+  const nd = mkNode([
+    { num: 1, cat: "", on: false, pos: "cat", neg: "", img: "", freq: 0, weight: 4 },
+  ]);
+  const wd = makeListWidget(nd);
+  wd.draw(fakeCtx(), nd, 340, 20, 540);
+  const s = state(nd);
+  const zone = s.rects[0].weight;
+  // grab the track well away from the label, so the label's own reset
+  // shortcut cannot be what makes this pass
+  const trackX = zone.trackX + zone.trackW * 0.75;
+  const trackY = zone.y + zone.h / 2;
+  const press = (x, y) => {
+    const e = {
+      type: "pointerdown", clientX: x, clientY: y, buttons: 1, pointerId: 1,
+      preventDefault() {}, stopPropagation() {},
+    };
+    return wd.mouse(e, [x, y], nd);
+  };
+
+  check("row starts at its stored 4", core.cleanWeight(s.rows[0].weight) === 4,
+    s.rows[0].weight);
+
+  // first press: starts a drag (it must NOT reset yet)
+  press(trackX, trackY);
+  check("the first press on the track starts a drag, not a reset",
+    s.draggingWeight === true && core.cleanWeight(s.rows[0].weight) === 4,
+    { dragging: s.draggingWeight, weight: s.rows[0].weight });
+  fireWindow("pointerup", {});
+
+  // second press within the double-click window: resets to 1
+  press(trackX, trackY);
+  check("a second quick press on the track resets the row to 1",
+    core.cleanWeight(s.rows[0].weight) === 1, s.rows[0].weight);
+  check("the reset press does not leave a drag running",
+    s.draggingWeight === false, s.draggingWeight);
+  check("the reset is persisted into the rows widget",
+    core.cleanWeight(JSON.parse(nd.widgets.find((w) => w.name === "rows").value)[0].weight) === 1,
+    JSON.parse(nd.widgets.find((w) => w.name === "rows").value)[0].weight);
+  fireWindow("pointerup", {});
+}
+
+// A DRAG followed by a click must NOT be read as a double-click: that would
+// silently throw away the value the user just dragged to.
+{
+  const nd = mkNode([
+    { num: 1, cat: "", on: false, pos: "cat", neg: "", img: "", freq: 0, weight: 1 },
+  ]);
+  const wd = makeListWidget(nd);
+  wd.draw(fakeCtx(), nd, 340, 20, 540);
+  const s = state(nd);
+  const zone = s.rects[0].weight;
+  const y = zone.y + zone.h / 2;
+  const press = (x) => {
+    const e = {
+      type: "pointerdown", clientX: x, clientY: y, buttons: 1, pointerId: 1,
+      preventDefault() {}, stopPropagation() {},
+    };
+    return wd.mouse(e, [x, y], nd);
+  };
+
+  press(zone.trackX + zone.trackW * 0.5);
+  fireWindow("pointermove", {
+    clientX: zone.trackX + zone.trackW * 0.95, clientY: y, buttons: 1,
+    preventDefault() {}, stopPropagation() {},
+  });
+  const draggedTo = core.cleanWeight(s.rows[0].weight);
+  check("the drag raised the weight above 1", draggedTo > 1, draggedTo);
+  fireWindow("pointerup", {});
+
+  // a click within the double-click window, but after a DRAG: keep the value
+  press(zone.trackX + zone.trackW * 0.5);
+  check("a click after a drag does not reset the dragged value",
+    core.cleanWeight(s.rows[0].weight) > 1, s.rows[0].weight);
+  fireWindow("pointerup", {});
+}
+
+// Two presses on DIFFERENT rows are not a double-click.
+{
+  const nd = mkNode([
+    { num: 1, cat: "", on: false, pos: "cat", neg: "", img: "", freq: 0, weight: 5 },
+    { num: 2, cat: "", on: false, pos: "dog", neg: "", img: "", freq: 0, weight: 5 },
+  ]);
+  const wd = makeListWidget(nd);
+  wd.draw(fakeCtx(), nd, 340, 20, 540);
+  const s = state(nd);
+  const press = (r) => {
+    const z = s.rects[r].weight;
+    const x = z.trackX + z.trackW * 0.75, y = z.y + z.h / 2;
+    const e = {
+      type: "pointerdown", clientX: x, clientY: y, buttons: 1, pointerId: 1,
+      preventDefault() {}, stopPropagation() {},
+    };
+    wd.mouse(e, [x, y], nd);
+    fireWindow("pointerup", {});
+  };
+  press(0);
+  press(1);
+  check("presses on two different rows do not reset either one",
+    core.cleanWeight(s.rows[0].weight) === 5 && core.cleanWeight(s.rows[1].weight) === 5,
+    [s.rows[0].weight, s.rows[1].weight]);
+}
+
+// ---------------------------------------------------------------------------
 console.log("\nrow.weight survives a clean/dump round-trip");
 
 const dumped = core.dumpRows(core.cleanRows(ROWS));

@@ -61,12 +61,13 @@ const SCROLL_H = 24; // px of the rows-scroll band under the rows list (28x24 ar
 const FREQ_W = 26; // px reserved on the right of a row for the usage counter
 // per-row weight control drawn inside the row: a log-scale slider plus its
 // number, right-aligned before the usage counter / image mark. The label
-// doubles as a click target that resets the row to 1. The column is only
-// reserved (and only drawn) when the row has clear space for it - on a narrow
-// node it is omitted rather than drawn over the category chip.
-const WEIGHT_COL_W = 60; // total px reserved for the weight control
-const WEIGHT_TRACK_W = 32; // px of the draggable track (log scale, 1.0 centred)
-const WEIGHT_LABEL_W = 24; // px of the clickable number / reset target
+// doubles as a click target that resets the row to 1, and a double-click
+// anywhere on the control resets it too. The column is only reserved (and
+// only drawn) when the row has clear space for it - on a narrow node it is
+// omitted rather than drawn over the category chip.
+const WEIGHT_COL_W = 84; // total px reserved for the weight control
+const WEIGHT_TRACK_W = 48; // px of the draggable track (log scale, 1.0 centred)
+const WEIGHT_LABEL_W = 28; // px of the clickable number / reset target
 const SB_W = 9; // scrollbar track width for the rows list (visual only)
 const SB_HIT_W = 24; // px of the scrollbar's pointer-capture band
 // presets section drawn below the row list on the node canvas
@@ -278,6 +279,10 @@ function state(node) {
       // swaps the objects, so a captured reference goes stale)
       draggingWeight: false, weightRowIndex: -1, weightStartClientX: 0,
       weightStartNodeX: 0, weightScale: 1, weightZone: null,
+      // double-click-to-reset bookkeeping: which row was pressed last, when,
+      // and whether that press turned into a drag (a drag is never half of a
+      // double-click)
+      weightClickRow: -1, weightClickMs: 0, weightDragged: false,
       hoverKey: -1, // row index under the mouse (for stateless draw-time hover)
       sortBtn: null, // header sort control hit zone (unused; kept for compat)
       sortedByFreq: false, // view-only flag: draw rows by usage frequency

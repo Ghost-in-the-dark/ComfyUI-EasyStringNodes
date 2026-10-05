@@ -174,13 +174,18 @@ function drawArrowButton(ctx, x, y, w, h, dir, enabled) {
 // A row's weight is a multiplier applied by Python to every comma-separated
 // token of the row, combined with the node's global "weight" input. The
 // control is a logarithmic slider with 1.0 exactly at its centre, plus the
-// value as text (so the number is readable, not just the thumb position) and
-// a click on that text resets the row to 1.
+// value as text (so the number is readable, not just the thumb position).
+// Either a click on that text or a double-click anywhere on the control
+// resets the row to 1 - dragging a log track back to exactly 1.0 is fiddly.
 //
 // It is deliberately drawn in the row's right-hand gap BEFORE the usage
 // counter, and its pointer zone is checked before the row's click-to-edit
 // handler, so grabbing the slider never opens the row dialog.
-const WEIGHT_THUMB_R = 4.5;
+const WEIGHT_THUMB_R = 5.5;
+// A double press inside this window resets the row to 1. Dragging a log slider
+// back to exactly 1.0 is fiddly, so a quick double-click is the deliberate
+// "no change" gesture.
+const WEIGHT_DBLCLICK_MS = 400;
 
 // Right-most x the weight column may use: the row's right padding, pulled in
 // by the usage counter chip and the image mark when those are drawn.
@@ -205,17 +210,21 @@ function weightSliderFits(rowY, rowH, rightLimit, labelX0) {
 function weightSliderGeometry(rowY, rowH, rightLimit) {
   // label sits at the right edge; the track is to its left
   const labelX = rightLimit - WEIGHT_LABEL_W;
-  const trackX = labelX - 6 - WEIGHT_TRACK_W;
+  const trackX = labelX - 7 - WEIGHT_TRACK_W;
   const trackW = WEIGHT_TRACK_W;
   const cy = rowY + rowH / 2;
+  // A thicker track reads as a real slider instead of a hairline, but the
+  // whole control must still fit the 22 px row pitch, so it is capped at 10 px
+  // and stays centred in the row.
+  const trackH = Math.min(10, rowH - 8);
   return {
     trackX: trackX,
-    trackY: cy - 3,
+    trackY: cy - trackH / 2,
     trackW: trackW,
-    trackH: 6,
+    trackH: trackH,
     // The pointer band covers the full row height. 22 px is the pitch of the
     // existing rows, so a taller band would overlap the neighbouring row's
-    // slider and make the grab ambiguous; the horizontal extent (60 px) is
+    // slider and make the grab ambiguous; the horizontal extent (84 px) is
     // what keeps the control comfortable to hit.
     hitY: cy - rowH / 2,
     hitH: rowH,
@@ -269,16 +278,16 @@ function drawRowWeight(ctx, row, rowY, rowH, midY, rightLimit, labelX0) {
   ctx.stroke();
   // value + reset affordance
   ctx.fillStyle = flat ? COL.textMuted : COL.accentWeight;
-  ctx.font = (flat ? "" : "bold ") + "9px sans-serif";
+  ctx.font = (flat ? "" : "bold ") + "10px sans-serif";
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
   ctx.fillText(clampTextToWidth(ctx, formatWeightLabel(w), g.labelW), g.labelX + g.labelW, midY);
   ctx.textAlign = "left";
   ctx.restore();
   return {
-    x: g.trackX - 2,
+    x: g.trackX - 3,
     y: g.hitY,
-    w: (g.labelX + g.labelW) - (g.trackX - 2),
+    w: (g.labelX + g.labelW + 3) - (g.trackX - 3),
     h: g.hitH,
     trackX: g.trackX,
     trackW: g.trackW,
@@ -411,6 +420,10 @@ function startWeightDrag(node, st, event, zone, rowIndex) {
   st.weightStartNodeX = zone.trackX + fracFromWeight(cur ? cur.weight : 1) * zone.trackW;
   st.weightScale = (app.canvas && app.canvas.ds && app.canvas.ds.scale) ? app.canvas.ds.scale : 1;
   st.weightZone = zone;
+  // A press that MOVES is a drag, not half of a double-click: without this,
+  // dragging the slider and then clicking again within the double-click window
+  // would be read as a double-click and silently throw the dragged value away.
+  st.weightDragged = false;
   try { event.stopPropagation(); } catch (e) {}
   try { event.preventDefault(); } catch (e) {}
   try {
@@ -445,16 +458,18 @@ function endWeightDrag() {
 // it rewrites the rows widget - exactly what a checkbox click already does.
 // It also REPLACES every row object (cleanRows), so the row is always looked
 // up again by index and never held across a commit.
+// Returns true when the value actually changed.
 function setRowWeight(node, rowIndex, value) {
-  if (rowIndex < 0) return;
+  if (rowIndex < 0) return false;
   const st = state(node);
   const row = st.rows[rowIndex];
-  if (!row) return;
+  if (!row) return false;
   const w = cleanWeight(value);
-  if (Math.abs(cleanWeight(row.weight) - w) < 1e-9) return;
+  if (Math.abs(cleanWeight(row.weight) - w) < 1e-9) return false;
   row.weight = w;
   commitRows(node, st.rows);
   app.graph?.setDirtyCanvas?.(true, true);
+  return true;
 }
 
 function onWeightMove(e) {
@@ -471,7 +486,11 @@ function onWeightMove(e) {
   if (!zone || rowIndex < 0 || !st.rows[rowIndex]) return;
   try { e.preventDefault(); } catch (err) {}
   try { e.stopPropagation(); } catch (err) {}
-  setRowWeight(node, rowIndex, weightAtClientX(st, zone, e.clientX));
+  if (setRowWeight(node, rowIndex, weightAtClientX(st, zone, e.clientX))) {
+    // the value moved, so this grab was a drag and must not pair up with a
+    // later click into an accidental double-click reset
+    st.weightDragged = true;
+  }
 }
 
 function makeListWidget(node) {
@@ -1471,15 +1490,39 @@ function makeListWidget(node) {
           // per-row weight slider FIRST: it must win over the click-to-edit
           // handler below, otherwise grabbing the slider would open the row
           // dialog instead of changing the weight. A press on the value text
-          // resets the row to 1 (a "Return to 1" shortcut); a press on the
-          // track starts a drag.
+          // resets the row to 1 immediately; any other press starts a drag,
+          // and a SECOND press on the same row within the double-click window
+          // also resets. Dragging a log slider back to exactly 1.0 is fiddly,
+          // so the double-click is the deliberate "no change" gesture.
           const wz = r.weight;
-          if (wz && x >= wz.x - 2 && x <= wz.x + wz.w + 2 &&
+          if (wz && x >= wz.x - 3 && x <= wz.x + wz.w + 3 &&
               y >= wz.y && y <= wz.y + wz.h) {
-            if (x >= wz.labelX - 2) {
+            const now = Date.now();
+            // Two presses on the same row within the window are a
+            // double-click. This is deliberately driven by our own recorded
+            // press (row + timestamp) rather than event.detail: LiteGraph and
+            // the different ComfyUI front-ends do not agree on whether a
+            // pointerdown carries a click count, and a front-end that always
+            // reported detail >= 2 would turn every single click into a reset.
+            // A previous press that DRAGGED never counts either, or a drag
+            // followed by a click would be read as a double-click and throw
+            // the dragged value away.
+            const isDouble =
+              !st.weightDragged &&
+              st.weightClickRow === r.index &&
+              (now - (st.weightClickMs || 0)) <= WEIGHT_DBLCLICK_MS;
+            if (isDouble || x >= wz.labelX - 3) {
+              // a reset also ends any drag the first press may have left
+              // running (a swallowed pointerup would otherwise keep it bound)
+              endWeightDrag();
+              st.weightClickRow = -1;
+              st.weightClickMs = 0;
+              st.weightDragged = false;
               setRowWeight(node, r.index, 1);
               return true;
             }
+            st.weightClickRow = r.index;
+            st.weightClickMs = now;
             startWeightDrag(node, st, event, wz, r.index);
             return true;
           }

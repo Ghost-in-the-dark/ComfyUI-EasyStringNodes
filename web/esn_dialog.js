@@ -302,7 +302,9 @@ function buildRowCard(row, idx, api) {
   wSlider.max = String(WEIGHT_MAX);
   wSlider.step = String(WEIGHT_STEP);
   wSlider.value = String(cleanWeight(row.weight));
-  wSlider.style.cssText = "flex:1 1 auto;min-width:80px;accent-color:#3a7bd5;cursor:pointer";
+  // taller than the browser default so the track and thumb are easy to grab
+  wSlider.style.cssText =
+    "flex:1 1 auto;min-width:120px;height:22px;accent-color:#3a7bd5;cursor:pointer";
   const wNum = document.createElement("input");
   wNum.type = "number";
   wNum.min = String(WEIGHT_MIN);
@@ -314,7 +316,7 @@ function buildRowCard(row, idx, api) {
     borderRadius: "4px", padding: "2px 4px", fontFamily: "monospace", fontSize: "11px",
   });
   const wReset = mkBtn("1", { pad: "3px 8px", font: "11px" });
-  wReset.title = "Reset this row's weight to 1";
+  wReset.title = "Reset this row's weight to 1 (or double-click the slider)";
   Object.assign(wReset.style, { flex: "0 0 auto", minHeight: "24px" });
 
   // Single source of truth: row.weight. Both controls plus the reset button
@@ -342,6 +344,11 @@ function buildRowCard(row, idx, api) {
   wNum.addEventListener("change", () => setWeight(wNum.value, ""));
   wNum.addEventListener("blur", () => setWeight(wNum.value, ""));
   wReset.addEventListener("click", () => setWeight(1, ""));
+  // double-click anywhere on the slider also resets to 1: the same "back to no
+  // change" gesture the on-node slider offers, where hitting exactly 1.0 on a
+  // log track by dragging is fiddly.
+  wSlider.addEventListener("dblclick", () => setWeight(1, ""));
+  wNum.addEventListener("dblclick", () => setWeight(1, ""));
   setWeight(row.weight, "");
 
   weightRow.appendChild(wLab);
